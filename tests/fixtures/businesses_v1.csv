@@ -1,0 +1,5 @@
+schema_version,source_record_id,company_name,domain,country_code,employee_count,industry,technology_need,excluded_reason,source_url,observed_at
+1,biz-001,Example Legal Automation,https://WWW.Example.COM/services,GB,25,accounting,manual_processes,,https://directory.example.org/businesses/biz-001,2026-10-01T10:00:00Z
+1,biz-002,Example Legal Automation,example.com,GB,30,accounting,legacy_systems,,https://directory.example.org/businesses/biz-002,2026-10-02T10:00:00Z
+1,biz-003,No Domain Consulting,,GB,12,bookkeeping,integration_gap,,https://directory.example.org/businesses/biz-003,2026-10-03T10:00:00+05:00
+1,biz-broken,Broken Date Co,broken.example,US,10,software,integration_gap,,https://directory.example.org/businesses/biz-broken,not-a-date
