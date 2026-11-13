@@ -18,6 +18,10 @@ Revision `1857fd4e0d6e` is the M7 opportunity-analysis migration. It adds five R
 
 Revision `5e550b440693` is the additive M7 foreign-key index follow-up. It indexes `budget_reservations.workspace_id`, `provider_usage_events.workspace_id`, and `provider_usage_events.reservation_id`, which were identified by the post-migration foreign-key audit. Its downgrade removes only those indexes.
 
+Revision `b3ba91f46e66` is the additive M8 authentication and export-audit foundation. It adds RLS-enabled `user_profiles`, `workspace_members`, `export_jobs`, and `audit_events` tables without granting browser or Data API access. Its downgrade permanently destroys membership, export, and audit history, so use a forward correction outside an isolated disposable database.
+
+Revision `66f352c5fd5f` adds append-only M8 review correction metadata and partial unique indexes that permit one active decision per individual candidate or opportunity hypothesis. It does not add tables or change RLS/grants. Its downgrade is allowed only while each subject still has at most one decision; once correction history exists, it fails closed rather than deleting audit records. Preserve the history and use a forward migration in that case.
+
 ## Apply and inspect
 
 Set `SCOUT_DATABASE_URL` to the intended database, then run:
@@ -47,6 +51,8 @@ Revision `c53cc7e9a80b` was subsequently applied to the same isolated test datab
 
 Revisions `1857fd4e0d6e` and `5e550b440693` were then applied to the same isolated test database. Alembic reports no schema drift; all 41 application tables have RLS; and there are no `PUBLIC` schema grants, invalid indexes, unvalidated constraints, unindexed M7/shared-ledger foreign-key columns, or invalid discovery/enrichment/opportunity ledger references. Grounding, injection, timeout, budget, review, and deterministic-score regression tests pass as part of the full 100-test suite. The destructive M7 downgrade was not run.
 
+Revisions `b3ba91f46e66` and `66f352c5fd5f` were applied to the approved isolated test database on 2026-11-13. Alembic reports no schema drift; all 45 application tables retain RLS; the private schema has no `PUBLIC` grants; both reversal completeness constraints and both active-decision partial unique indexes are valid. The backend suite passes 115 tests and the frontend suite passes 12 tests plus type-check and production build. The M8 downgrade was not run because the test suite intentionally created retained correction history and the migration correctly refuses to erase it.
+
 ## Recovery strategy
 
 - For disposable development data, recreate the schema with `alembic upgrade head` and re-import the original versioned CSV fixtures.
@@ -57,4 +63,4 @@ Revisions `1857fd4e0d6e` and `5e550b440693` were then applied to the same isolat
 
 ## RLS review
 
-RLS is enabled with no policies on all 41 application tables. Non-owner roles therefore have no row access, and the schema has no `PUBLIC` access. The direct backend connection operates as the table owner for local development. M2 must introduce workspace membership, explicit grants, policy tests for every role/action, and a non-owner application role before any browser or Data API exposure.
+RLS is enabled with no policies on all 45 application tables. The schema has no `PUBLIC` access and no browser/Data API grants. FastAPI validates Supabase tokens and active workspace membership before application access; the direct backend connection remains the table owner. Explicit Data API grants and per-table policies are still required before any direct browser database access, which remains out of scope.

@@ -47,6 +47,8 @@ def test_fictional_analysis_is_grounded_budgeted_and_score_neutral(
     client: TestClient,
 ) -> None:
     lead_id = _import_example_lead(client)
+    missing_latest = client.get(f"/v1/leads/{lead_id}/opportunity-analysis-runs/latest")
+    assert missing_latest.status_code == 404
     score_before = client.get(f"/v1/leads/{lead_id}").json()["score_detail"]
     request = {"idempotency_key": "opportunity-analysis-grounded-001"}
     response = client.post(f"/v1/leads/{lead_id}/opportunity-analysis-runs", json=request)
@@ -64,6 +66,10 @@ def test_fictional_analysis_is_grounded_budgeted_and_score_neutral(
     assert hypothesis["citation_claim_ids"]
     assert "not a verified buying signal" in hypothesis["summary"]
     assert client.get(f"/v1/leads/{lead_id}").json()["score_detail"] == score_before
+
+    latest = client.get(f"/v1/leads/{lead_id}/opportunity-analysis-runs/latest")
+    assert latest.status_code == 200, latest.text
+    assert latest.json()["id"] == payload["id"]
 
     replay = client.post(f"/v1/leads/{lead_id}/opportunity-analysis-runs", json=request)
     assert replay.status_code == 200
@@ -98,7 +104,9 @@ def test_fictional_analysis_is_grounded_budgeted_and_score_neutral(
     engine.dispose()
 
 
-def test_opportunity_review_is_human_final_and_append_only(client: TestClient) -> None:
+def test_opportunity_review_can_be_reopened_with_append_only_history(
+    client: TestClient,
+) -> None:
     lead_id = _import_example_lead(client)
     run = client.post(
         f"/v1/leads/{lead_id}/opportunity-analysis-runs",
@@ -116,16 +124,36 @@ def test_opportunity_review_is_human_final_and_append_only(client: TestClient) -
         json={"decision": "reject", "reason": "Attempt to revise the final decision."},
     )
     assert repeated.status_code == 409
+    reversed_review = client.post(
+        f"/v1/opportunity-hypotheses/{hypothesis_id}/review/reverse",
+        json={"reason": "Operator found the original advisory review was mistaken."},
+    )
+    replayed_reversal = client.post(
+        f"/v1/opportunity-hypotheses/{hypothesis_id}/review/reverse",
+        json={"reason": "Operator found the original advisory review was mistaken."},
+    )
+    assert reversed_review.status_code == replayed_reversal.status_code == 200
+    assert reversed_review.json()["review_status"] == "unreviewed"
+    corrected = client.post(
+        f"/v1/opportunity-hypotheses/{hypothesis_id}/review",
+        json={"decision": "reject", "reason": "Evidence does not support follow-up."},
+    )
+    assert corrected.status_code == 200, corrected.text
+    assert corrected.json()["review_status"] == "rejected"
 
     settings = get_settings()
     engine = create_engine(settings.database_url)
     with Session(engine) as session:
-        decisions = session.scalar(
-            select(func.count())
-            .select_from(OpportunityReviewDecision)
+        decisions = session.scalars(
+            select(OpportunityReviewDecision)
             .where(OpportunityReviewDecision.hypothesis_id == UUID(hypothesis_id))
-        )
-        assert decisions == 1
+            .order_by(OpportunityReviewDecision.decided_at)
+        ).all()
+        assert len(decisions) == 2
+        assert decisions[0].reversed_at is not None
+        assert decisions[0].reversal_reason is not None
+        assert decisions[0].reversed_by_user_id is not None
+        assert decisions[1].reversed_at is None
     engine.dispose()
 
 

@@ -2,7 +2,7 @@
 
 Revvix Scout is a free-first lead intelligence platform for discovering, researching, enriching, and qualifying potential customers for Revvix AI. It is designed around two independent prospect pipelines—individual professionals and businesses—backed by shared evidence, entity resolution, qualification, budget control, and reporting capabilities.
 
-> Status: M3 through the approved provider-free M7 scope are complete and acceptance-tested against isolated local PostgreSQL. M7 adds grounded fictional opportunity analysis, versioned prompts/taxonomy, citation enforcement, budget accounting, injection exclusion, and final human review. No live personal data, live LLM/provider, outreach, paid-credit, hosted-Supabase, or cloud call is enabled.
+> Status: M3 through the approved provider-free M8 scope are complete and acceptance-tested against isolated local PostgreSQL and the local browser dashboard. No live personal data, live LLM/provider, outreach, paid-credit, hosted-Supabase, cloud call, or deployment is enabled.
 
 ## Product principles
 
@@ -30,6 +30,8 @@ Revvix Scout is a free-first lead intelligence platform for discovering, researc
 - [M5 fictional decision-maker research contract](docs/DECISION_MAKERS_M5.md)
 - [M6 enrichment and entity-resolution foundation](docs/ENRICHMENT_M6.md)
 - [M7 AI qualification and opportunity-detection contract](docs/AI_QUALIFICATION_M7.md)
+- [M8 dashboard contract](docs/DASHBOARD_M8.md)
+- [M8 accessibility review](docs/M8_ACCESSIBILITY_REVIEW.md)
 - [Repository instructions](AGENTS.md)
 
 ## Implemented M2A workflow
@@ -40,7 +42,7 @@ The first vertical slice now supports:
 2. Normalize names, domains, and locations and reject exact duplicates.
 3. Attach source-backed evidence supplied in the import.
 4. Score candidates with deterministic, versioned ICP rules.
-5. Expose list/detail endpoints and a formula-safe CSV export.
+5. Expose list/detail endpoints and a formula-safe, memory-bounded streaming CSV export.
 
 This proves the core data boundaries and business rules without paid credits, web scraping, LLM use, email discovery, or outbound communication. The accepted scope and test criteria remain in [the roadmap](docs/ROADMAP.md#recommended-first-build-m2a-provider-free-business-qualification-slice).
 
@@ -92,6 +94,16 @@ curl -F 'file=@tests/fixtures/businesses_v1.csv;type=text/csv' \
   http://127.0.0.1:8000/v1/imports/business-csv
 ```
 
+For the M8 loopback dashboard, use a compatible Node.js release and the pinned lockfile:
+
+```bash
+cd apps/web
+npm ci
+npm run dev
+```
+
+Open `http://127.0.0.1:5173`. The development server proxies API requests to the local FastAPI process on port 8000. The default deterministic owner session is for loopback fixture development only. See [the M8 dashboard contract](docs/DASHBOARD_M8.md) to enable API-mediated Supabase sessions; no secret/service key belongs in browser variables.
+
 Run a fictional discovery page with:
 
 ```bash
@@ -142,6 +154,7 @@ Scout uses a compact modular-monolith layout:
 
 ```text
 revvix-scout/
+├── apps/web/                   # M8 local React operator dashboard
 ├── src/revvix_scout/
 │   ├── api/                    # FastAPI routes
 │   ├── application/            # CSV import, queries, bootstrap, contracts
@@ -162,4 +175,4 @@ revvix-scout/
 
 ## Scope boundary
 
-M3 uses one deterministic development workspace and the approved configurable England accounting-firm ICP. M4 adds a separate fictional-only individual candidate path. M5 adds fictional-only, company-scoped decision-maker role research with a separate operation budget and no contact fields. M6 adds fictional enrichment and review-first entity resolution. M7 adds deterministic, fictional, tool-free opportunity analysis; it does not enable a live LLM. Authentication/RLS membership policies remain an M2 dependency before any client or hosted use. The system does not include live people/contact collection, fuzzy auto-merging, live AI analysis, recurring scheduling, a frontend, deployment, or outreach. No paid service, hosted infrastructure, production migration, deployment, or external message is authorized.
+M3 uses one deterministic development workspace and the approved configurable England accounting-firm ICP. M4 adds a separate fictional-only individual candidate path. M5 adds fictional-only, company-scoped decision-maker role research with a separate operation budget and no contact fields. M6 adds fictional enrichment and review-first entity resolution. M7 adds deterministic, fictional, tool-free opportunity analysis; it does not enable a live LLM. M8 adds a local frontend, API-mediated Supabase authentication, explicit role capabilities, audited exports, unified human-review queues, safe review correction, and WCAG 2.2 AA-oriented accessibility safeguards. The system does not include live people/contact collection, fuzzy auto-merging, live AI analysis, recurring scheduling, deployment, or outreach. No paid service, hosted infrastructure, production migration, deployment, or external message is authorized.

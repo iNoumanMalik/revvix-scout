@@ -143,6 +143,8 @@ This is the smallest functional milestone worth implementing. It validates the c
 
 ## M8 — Dashboard, filtering, and exports
 
+**Implementation status:** Complete on 2026-11-13 for the approved local, provider-free scope. The React operator dashboard covers shareable business-lead filters, cursor pagination, deterministic score explanation, evidence classification, advisory opportunity review/correction, and a unified queue for business, fictional individual, duplicate-match, and AI-advisory decisions. API-mediated Supabase sessions, active workspace-membership authorization, a deterministic local owner, memory-bounded audited CSV streaming, the role/capability matrix, evidence-rich individual review, modal focus containment, mobile review navigation, reversible duplicate decisions, append-only correction, and the WCAG 2.2 AA-oriented source, automated, and live-browser acceptance review are complete. No live provider, hosted resource, outreach, deployment, or paid credit was used.
+
 **Outcome:** Operators can efficiently review, filter, correct, and export leads.
 
 **Dependencies:** Stable M4–M7 APIs; design/accessibility review.

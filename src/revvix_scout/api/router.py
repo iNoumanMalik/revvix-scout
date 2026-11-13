@@ -1,14 +1,21 @@
 """Versioned FastAPI routes for provider-free business and individual slices."""
 
-from datetime import UTC
+from collections.abc import Iterator
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from revvix_scout.api.auth import (
+    CurrentActor,
+    CurrentActorDependency,
+    require_capability,
+    require_current_actor,
+)
 from revvix_scout.application.contracts import (
     DecisionMakerCandidateView,
     DecisionMakerRoleView,
@@ -41,6 +48,9 @@ from revvix_scout.application.contracts import (
     OpportunityReviewRequest,
     PersonSuppressionRequest,
     PersonSuppressionView,
+    ReviewQueuePage,
+    ReviewReversalRequest,
+    SessionView,
 )
 from revvix_scout.application.decision_makers import (
     DecisionMakerCollectionNotApprovedError,
@@ -79,26 +89,32 @@ from revvix_scout.application.individual_leads import (
     PersonNotFoundError,
     list_individual_leads,
     resolve_individual_candidate,
+    reverse_individual_review,
     suppress_person,
 )
 from revvix_scout.application.leads import (
+    LEAD_EXPORT_FIELDS,
+    CsvExportProgress,
     InvalidCursorError,
     LeadFilters,
     LeadNotFoundError,
-    export_leads_csv,
     get_lead_detail,
     list_leads,
+    stream_leads_csv,
 )
 from revvix_scout.application.opportunities import (
     OpportunityAnalysisError,
     OpportunityAnalysisNotApprovedError,
     execute_opportunity_analysis,
+    reverse_opportunity_review,
     review_opportunity_hypothesis,
 )
+from revvix_scout.application.reviews import list_review_queue
 from revvix_scout.application.usage import BudgetExceededError
 from revvix_scout.config import Settings, get_settings
 from revvix_scout.db.models import (
     AiPromptDefinition,
+    AuditEvent,
     DecisionMakerCandidate,
     DiscoveryCandidate,
     DiscoveryRun,
@@ -106,6 +122,7 @@ from revvix_scout.db.models import (
     EntityMatchCandidate,
     EntityMergeEvent,
     EvidenceClaim,
+    ExportJob,
     IndividualDiscoveryCandidate,
     Job,
     JobAttempt,
@@ -114,7 +131,7 @@ from revvix_scout.db.models import (
     OpportunityHypothesisEvidence,
     SourceDocument,
 )
-from revvix_scout.db.session import get_db_session
+from revvix_scout.db.session import get_db_session, get_session_factory
 from revvix_scout.providers.contracts import (
     DiscoveredBusiness,
     DiscoveryQuery,
@@ -142,7 +159,8 @@ from revvix_scout.providers.registry import (
     create_provider_registry,
 )
 
-router = APIRouter()
+public_router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_current_actor)])
 DbSession = Annotated[Session, Depends(get_db_session)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
 provider_registry = create_provider_registry()
@@ -152,7 +170,7 @@ enrichment_provider_registry = create_enrichment_provider_registry()
 opportunity_analysis_provider_registry = create_opportunity_analysis_provider_registry()
 
 
-@router.get("/health", tags=["system"])
+@public_router.get("/health", tags=["system"])
 def health(session: DbSession) -> dict[str, str]:
     """Verify that the API process can query PostgreSQL."""
 
@@ -160,7 +178,37 @@ def health(session: DbSession) -> dict[str, str]:
     return {"status": "ok"}
 
 
-@router.post("/v1/imports/business-csv", response_model=ImportSummary, tags=["imports"])
+@router.get("/v1/session", response_model=SessionView, tags=["system"])
+def read_session(actor: CurrentActorDependency) -> SessionView:
+    """Return the authenticated identity and server-authorized workspace membership."""
+
+    return SessionView(
+        user_id=actor.user_id,
+        workspace_id=actor.workspace_id,
+        role=actor.role,
+        display_name=actor.display_name,
+        auth_mode=actor.auth_mode,
+        capabilities=sorted(actor.capabilities),
+    )
+
+
+@router.get("/v1/review-queue", response_model=ReviewQueuePage, tags=["reviews"])
+def read_review_queue(
+    session: DbSession,
+    settings: AppSettings,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+) -> ReviewQueuePage:
+    """List pending human decisions across independent review domains."""
+
+    return list_review_queue(session=session, settings=settings, limit=limit)
+
+
+@router.post(
+    "/v1/imports/business-csv",
+    response_model=ImportSummary,
+    tags=["imports"],
+    dependencies=[Depends(require_capability("ingest"))],
+)
 def import_businesses(
     file: Annotated[UploadFile, File(description="UTF-8 CSV using schema_version 1")],
     session: DbSession,
@@ -204,25 +252,102 @@ def read_leads(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/v1/leads/export.csv", tags=["leads"])
+@router.get(
+    "/v1/leads/export.csv",
+    tags=["leads"],
+    dependencies=[Depends(require_capability("export"))],
+)
 def export_leads(
     session: DbSession,
     settings: AppSettings,
+    actor: CurrentActorDependency,
+    request: Request,
     disposition: Literal["qualified", "review", "unqualified", "disqualified"] | None = None,
     min_score: Annotated[int | None, Query(ge=0, le=100)] = None,
-) -> Response:
+) -> StreamingResponse:
     """Export allow-listed lead fields as a safe CSV file."""
 
-    csv_content = export_leads_csv(
-        session=session,
-        settings=settings,
-        filters=LeadFilters(disposition=disposition, min_score=min_score),
-    )
-    return Response(
-        content=csv_content,
+    filters = LeadFilters(disposition=disposition, min_score=min_score)
+    filter_snapshot: dict[str, str | int | None] = {
+        "disposition": disposition,
+        "min_score": min_score,
+    }
+    request_id = request.headers.get("x-request-id")
+    progress = CsvExportProgress()
+    session.rollback()
+
+    def export_stream() -> Iterator[str]:
+        completed = False
+        try:
+            with get_session_factory()() as export_session:
+                yield from stream_leads_csv(
+                    session=export_session,
+                    settings=settings,
+                    filters=filters,
+                    progress=progress,
+                )
+            completed = True
+        finally:
+            _record_export_outcome(
+                actor=actor,
+                filter_snapshot=filter_snapshot,
+                request_id=request_id,
+                row_count=progress.row_count,
+                succeeded=completed,
+            )
+
+    return StreamingResponse(
+        content=export_stream(),
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="revvix-scout-leads.csv"'},
+        headers={
+            "Content-Disposition": 'attachment; filename="revvix-scout-leads.csv"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
+
+
+def _record_export_outcome(
+    *,
+    actor: CurrentActor,
+    filter_snapshot: dict[str, str | int | None],
+    request_id: str | None,
+    row_count: int,
+    succeeded: bool,
+) -> None:
+    """Persist the terminal audit state after streaming ends or is interrupted."""
+
+    status = "succeeded" if succeeded else "failed"
+    now = datetime.now(UTC)
+    with get_session_factory()() as audit_session:
+        export_job = ExportJob(
+            workspace_id=actor.workspace_id,
+            requested_by_user_id=actor.user_id,
+            filter_snapshot_json=filter_snapshot,
+            selected_fields_json=LEAD_EXPORT_FIELDS,
+            row_count=row_count,
+            status=status,
+            completed_at=now,
+        )
+        audit_session.add(export_job)
+        audit_session.flush()
+        audit_session.add(
+            AuditEvent(
+                workspace_id=actor.workspace_id,
+                actor_user_id=actor.user_id,
+                action=f"lead_export.{status}",
+                target_type="export_job",
+                target_id=export_job.id,
+                request_id=request_id,
+                metadata_json={
+                    "row_count": row_count,
+                    "selected_fields": LEAD_EXPORT_FIELDS,
+                    "streamed": True,
+                },
+                occurred_at=now,
+            )
+        )
+        audit_session.commit()
 
 
 @router.get("/v1/leads/{lead_id}", response_model=LeadDetail, tags=["leads"])
@@ -235,7 +360,12 @@ def read_lead(lead_id: UUID, session: DbSession, settings: AppSettings) -> LeadD
         raise HTTPException(status_code=404, detail="Lead not found") from exc
 
 
-@router.post("/v1/discovery-runs", response_model=DiscoveryRunView, tags=["discovery"])
+@router.post(
+    "/v1/discovery-runs",
+    response_model=DiscoveryRunView,
+    tags=["discovery"],
+    dependencies=[Depends(require_capability("run_pipeline"))],
+)
 def create_discovery_run(
     request: DiscoveryRunRequest, session: DbSession, settings: AppSettings
 ) -> DiscoveryRunView:
@@ -268,7 +398,12 @@ def create_discovery_run(
     return _discovery_view(session, run)
 
 
-@router.post("/v1/discovery-runs/manual", response_model=DiscoveryRunView, tags=["discovery"])
+@router.post(
+    "/v1/discovery-runs/manual",
+    response_model=DiscoveryRunView,
+    tags=["discovery"],
+    dependencies=[Depends(require_capability("ingest"))],
+)
 def create_manual_discovery_run(
     request: ManualDiscoveryRequest, session: DbSession, settings: AppSettings
 ) -> DiscoveryRunView:
@@ -304,7 +439,12 @@ def create_manual_discovery_run(
     )
 
 
-@router.post("/v1/discovery-runs/csv", response_model=DiscoveryRunView, tags=["discovery"])
+@router.post(
+    "/v1/discovery-runs/csv",
+    response_model=DiscoveryRunView,
+    tags=["discovery"],
+    dependencies=[Depends(require_capability("ingest"))],
+)
 def create_csv_discovery_run(
     file: Annotated[UploadFile, File(description="UTF-8 discovery CSV schema version 1")],
     session: DbSession,
@@ -339,7 +479,10 @@ def create_csv_discovery_run(
 
 
 @router.post(
-    "/v1/discovery-runs/{run_id}/resume", response_model=DiscoveryRunView, tags=["discovery"]
+    "/v1/discovery-runs/{run_id}/resume",
+    response_model=DiscoveryRunView,
+    tags=["discovery"],
+    dependencies=[Depends(require_capability("run_pipeline"))],
 )
 def resume_discovery_run(
     run_id: UUID, session: DbSession, settings: AppSettings
@@ -385,6 +528,7 @@ def read_discovery_run(run_id: UUID, session: DbSession, settings: AppSettings) 
     "/v1/individual-discovery-runs",
     response_model=IndividualDiscoveryRunView,
     tags=["individual-discovery"],
+    dependencies=[Depends(require_capability("run_pipeline"))],
 )
 def create_individual_discovery_run(
     request: IndividualDiscoveryRunRequest,
@@ -444,10 +588,32 @@ def read_individual_discovery_run(
     return _individual_discovery_view(session, run)
 
 
+@router.get(
+    "/v1/individual-candidates/{candidate_id}",
+    response_model=IndividualCandidateView,
+    tags=["individual-discovery"],
+)
+def read_individual_candidate(
+    candidate_id: UUID, session: DbSession, settings: AppSettings
+) -> IndividualCandidateView:
+    """Read the allow-listed evidence and match context for one candidate."""
+
+    candidate = session.scalar(
+        select(IndividualDiscoveryCandidate).where(
+            IndividualDiscoveryCandidate.id == candidate_id,
+            IndividualDiscoveryCandidate.workspace_id == settings.default_workspace_id,
+        )
+    )
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Individual candidate not found")
+    return _individual_candidate_view(candidate)
+
+
 @router.post(
     "/v1/individual-candidates/{candidate_id}/review",
     response_model=IndividualReviewResult,
     tags=["individual-discovery"],
+    dependencies=[Depends(require_capability("review"))],
 )
 def review_individual_candidate(
     candidate_id: UUID,
@@ -475,6 +641,38 @@ def review_individual_candidate(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@router.post(
+    "/v1/individual-candidates/{candidate_id}/review/reverse",
+    response_model=IndividualCandidateView,
+    tags=["individual-discovery"],
+    dependencies=[Depends(require_capability("review"))],
+)
+def reverse_individual_candidate_review(
+    candidate_id: UUID,
+    request: ReviewReversalRequest,
+    session: DbSession,
+    settings: AppSettings,
+    actor: CurrentActorDependency,
+) -> IndividualCandidateView:
+    """Reopen a plain rejection while preserving its immutable audit history."""
+
+    try:
+        candidate = reverse_individual_review(
+            session=session,
+            settings=settings,
+            candidate_id=candidate_id,
+            actor_user_id=actor.user_id,
+            reason=request.reason,
+        )
+    except IndividualCandidateNotFoundError as exc:
+        session.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except IndividualReviewConflictError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _individual_candidate_view(candidate)
+
+
 @router.get(
     "/v1/individual-leads",
     response_model=IndividualLeadPage,
@@ -490,6 +688,7 @@ def read_individual_leads(session: DbSession, settings: AppSettings) -> Individu
     "/v1/people/{person_id}/suppress",
     response_model=PersonSuppressionView,
     tags=["individual-leads"],
+    dependencies=[Depends(require_capability("privacy"))],
 )
 def create_person_suppression(
     person_id: UUID,
@@ -515,6 +714,7 @@ def create_person_suppression(
     "/v1/companies/{company_id}/decision-maker-runs",
     response_model=DecisionMakerRunView,
     tags=["decision-makers"],
+    dependencies=[Depends(require_capability("run_pipeline"))],
 )
 def create_decision_maker_run(
     company_id: UUID,
@@ -575,6 +775,7 @@ def read_decision_maker_run(
     "/v1/decision-maker-candidates/{candidate_id}/promote",
     response_model=DecisionMakerRoleView,
     tags=["decision-makers"],
+    dependencies=[Depends(require_capability("review"))],
 )
 def promote_decision_maker(
     candidate_id: UUID, session: DbSession, settings: AppSettings
@@ -598,6 +799,7 @@ def promote_decision_maker(
     "/v1/leads/{lead_id}/enrichment-runs",
     response_model=EnrichmentRunView,
     tags=["enrichment"],
+    dependencies=[Depends(require_capability("run_pipeline"))],
 )
 def create_enrichment_run(
     lead_id: UUID,
@@ -654,6 +856,7 @@ def read_enrichment_run(
     "/v1/leads/{lead_id}/opportunity-analysis-runs",
     response_model=OpportunityAnalysisRunView,
     tags=["opportunities"],
+    dependencies=[Depends(require_capability("run_pipeline"))],
 )
 def create_opportunity_analysis_run(
     lead_id: UUID,
@@ -689,6 +892,30 @@ def create_opportunity_analysis_run(
 
 
 @router.get(
+    "/v1/leads/{lead_id}/opportunity-analysis-runs/latest",
+    response_model=OpportunityAnalysisRunView,
+    tags=["opportunities"],
+)
+def read_latest_opportunity_analysis_run(
+    lead_id: UUID, session: DbSession, settings: AppSettings
+) -> OpportunityAnalysisRunView:
+    """Return the newest persisted opportunity analysis for one workspace lead."""
+
+    run = session.scalar(
+        select(OpportunityAnalysisRun)
+        .where(
+            OpportunityAnalysisRun.lead_id == lead_id,
+            OpportunityAnalysisRun.workspace_id == settings.default_workspace_id,
+        )
+        .order_by(OpportunityAnalysisRun.created_at.desc(), OpportunityAnalysisRun.id.desc())
+        .limit(1)
+    )
+    if run is None:
+        raise HTTPException(status_code=404, detail="Opportunity analysis run not found")
+    return _opportunity_analysis_view(session, run)
+
+
+@router.get(
     "/v1/opportunity-analysis-runs/{run_id}",
     response_model=OpportunityAnalysisRunView,
     tags=["opportunities"],
@@ -711,6 +938,7 @@ def read_opportunity_analysis_run(
     "/v1/opportunity-hypotheses/{hypothesis_id}/review",
     response_model=OpportunityHypothesisView,
     tags=["opportunities"],
+    dependencies=[Depends(require_capability("review"))],
 )
 def review_opportunity(
     hypothesis_id: UUID,
@@ -736,9 +964,40 @@ def review_opportunity(
 
 
 @router.post(
+    "/v1/opportunity-hypotheses/{hypothesis_id}/review/reverse",
+    response_model=OpportunityHypothesisView,
+    tags=["opportunities"],
+    dependencies=[Depends(require_capability("review"))],
+)
+def reverse_opportunity(
+    hypothesis_id: UUID,
+    request: ReviewReversalRequest,
+    session: DbSession,
+    settings: AppSettings,
+    actor: CurrentActorDependency,
+) -> OpportunityHypothesisView:
+    """Reopen an advisory hypothesis while retaining its prior decision."""
+
+    try:
+        hypothesis = reverse_opportunity_review(
+            session=session,
+            settings=settings,
+            hypothesis_id=hypothesis_id,
+            actor_user_id=actor.user_id,
+            reason=request.reason,
+        )
+    except OpportunityAnalysisError as exc:
+        session.rollback()
+        status_code = 404 if "not found" in str(exc) else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    return _opportunity_hypothesis_view(session, hypothesis)
+
+
+@router.post(
     "/v1/entity-match-candidates",
     response_model=EntityMatchView,
     tags=["entity-resolution"],
+    dependencies=[Depends(require_capability("run_pipeline"))],
 )
 def create_entity_match(
     request: EntityMatchRequest,
@@ -767,6 +1026,7 @@ def create_entity_match(
     "/v1/entity-match-candidates/{candidate_id}/review",
     response_model=EntityMatchView,
     tags=["entity-resolution"],
+    dependencies=[Depends(require_capability("review"))],
 )
 def review_entity_match(
     candidate_id: UUID,
@@ -796,6 +1056,7 @@ def review_entity_match(
     "/v1/entity-merge-events/{event_id}/unmerge",
     response_model=EntityMatchView,
     tags=["entity-resolution"],
+    dependencies=[Depends(require_capability("review"))],
 )
 def unmerge_entity(
     event_id: UUID,
@@ -1066,33 +1327,36 @@ def _individual_discovery_view(session: Session, run: DiscoveryRun) -> Individua
         error_message=run.error_message,
         attempt_count=int(attempt_count or 0),
         max_attempts=job.max_attempts,
-        candidates=[
-            IndividualCandidateView(
-                id=item.id,
-                provider_record_id=item.provider_record_id,
-                display_name=item.display_name,
-                professional_profile_url=item.professional_profile_url,
-                normalized_profile_url=item.normalized_profile_url,
-                persona=item.persona,
-                country_code=item.country_code,
-                region=item.region,
-                service_summary=item.service_summary,
-                has_professional_presence=item.has_professional_presence,
-                has_business_relevance=item.has_business_relevance,
-                is_fictional=item.is_fictional,
-                source_url=item.source_url,
-                observed_at=item.observed_at,
-                status=item.status,
-                disposition=item.disposition,
-                score=item.score,
-                maximum_score=item.maximum_score,
-                rejection_reason=item.rejection_reason,
-                possible_match_person_id=item.possible_match_person_id,
-                duplicate_person_id=item.duplicate_person_id,
-                evidence_classification=str(item.provenance_json["classification"]),
-            )
-            for item in candidates
-        ],
+        candidates=[_individual_candidate_view(item) for item in candidates],
+    )
+
+
+def _individual_candidate_view(
+    candidate: IndividualDiscoveryCandidate,
+) -> IndividualCandidateView:
+    return IndividualCandidateView(
+        id=candidate.id,
+        provider_record_id=candidate.provider_record_id,
+        display_name=candidate.display_name,
+        professional_profile_url=candidate.professional_profile_url,
+        normalized_profile_url=candidate.normalized_profile_url,
+        persona=candidate.persona,
+        country_code=candidate.country_code,
+        region=candidate.region,
+        service_summary=candidate.service_summary,
+        has_professional_presence=candidate.has_professional_presence,
+        has_business_relevance=candidate.has_business_relevance,
+        is_fictional=candidate.is_fictional,
+        source_url=candidate.source_url,
+        observed_at=candidate.observed_at,
+        status=candidate.status,
+        disposition=candidate.disposition,
+        score=candidate.score,
+        maximum_score=candidate.maximum_score,
+        rejection_reason=candidate.rejection_reason,
+        possible_match_person_id=candidate.possible_match_person_id,
+        duplicate_person_id=candidate.duplicate_person_id,
+        evidence_classification=str(candidate.provenance_json["classification"]),
     )
 
 

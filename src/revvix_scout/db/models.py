@@ -53,6 +53,45 @@ class Workspace(Base, TimestampMixin):
     )
 
 
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+
+    user_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    __table_args__ = ({"schema": "scout"},)
+
+
+class WorkspaceMember(Base, TimestampMixin):
+    __tablename__ = "workspace_members"
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.workspaces.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.user_profiles.user_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    role: Mapped[str] = mapped_column(String(24), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="active")
+
+    __table_args__ = (
+        CheckConstraint(
+            "role in ('owner', 'admin', 'operator', 'reviewer', 'viewer', 'automation')",
+            name="role_valid",
+        ),
+        CheckConstraint("status in ('active', 'disabled')", name="status_valid"),
+        Index("ix_workspace_members_user_status", "user_id", "status"),
+        {"schema": "scout"},
+    )
+
+
 class IcpConfig(Base, TimestampMixin):
     __tablename__ = "icp_configs"
 
@@ -1351,12 +1390,16 @@ class IndividualReviewDecision(Base):
     reason: Mapped[str] = mapped_column(String(500), nullable=False)
     actor_type: Mapped[str] = mapped_column(String(24), nullable=False, default="operator")
     decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reversal_reason: Mapped[str | None] = mapped_column(String(500))
+    reversed_by_user_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.user_profiles.user_id", ondelete="RESTRICT")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
 
     __table_args__ = (
-        UniqueConstraint("candidate_id", name="uq_individual_review_decisions_candidate"),
         CheckConstraint(
             "action in ('promote_new', 'link_existing', 'reject', 'suppress')",
             name="action_valid",
@@ -1372,9 +1415,23 @@ class IndividualReviewDecision(Base):
             "(action in ('reject', 'suppress') and lead_id is null)",
             name="promotion_action_requires_lead",
         ),
+        CheckConstraint(
+            "(reversed_at is null and reversal_reason is null and reversed_by_user_id is null) or "
+            "(reversed_at is not null and reversal_reason is not null and "
+            "reversed_by_user_id is not null)",
+            name="reversal_fields_complete",
+        ),
         Index("ix_individual_review_decisions_workspace_decided", "workspace_id", "decided_at"),
         Index("ix_individual_review_decisions_selected_person", "selected_person_id"),
         Index("ix_individual_review_decisions_lead", "lead_id"),
+        Index("ix_individual_review_decisions_reversed_by", "reversed_by_user_id"),
+        Index(
+            "uq_individual_review_decisions_active_candidate",
+            "workspace_id",
+            "candidate_id",
+            unique=True,
+            postgresql_where=text("reversed_at is null"),
+        ),
         {"schema": "scout"},
     )
 
@@ -1550,12 +1607,16 @@ class OpportunityReviewDecision(Base):
         PGUUID(as_uuid=True),
         ForeignKey("scout.opportunity_hypotheses.id", ondelete="CASCADE"),
         nullable=False,
-        unique=True,
     )
     decision: Mapped[str] = mapped_column(String(24), nullable=False)
     reason: Mapped[str] = mapped_column(String(500), nullable=False)
     actor_type: Mapped[str] = mapped_column(String(24), nullable=False, default="operator")
     decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reversal_reason: Mapped[str | None] = mapped_column(String(500))
+    reversed_by_user_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.user_profiles.user_id", ondelete="RESTRICT")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
@@ -1563,7 +1624,21 @@ class OpportunityReviewDecision(Base):
     __table_args__ = (
         CheckConstraint("decision in ('accept', 'reject')", name="decision_valid"),
         CheckConstraint("actor_type = 'operator'", name="actor_type_valid"),
+        CheckConstraint(
+            "(reversed_at is null and reversal_reason is null and reversed_by_user_id is null) or "
+            "(reversed_at is not null and reversal_reason is not null and "
+            "reversed_by_user_id is not null)",
+            name="reversal_fields_complete",
+        ),
         Index("ix_opportunity_review_decisions_workspace_decided", "workspace_id", "decided_at"),
+        Index("ix_opportunity_review_decisions_reversed_by", "reversed_by_user_id"),
+        Index(
+            "uq_opportunity_review_decisions_active_hypothesis",
+            "workspace_id",
+            "hypothesis_id",
+            unique=True,
+            postgresql_where=text("reversed_at is null"),
+        ),
         {"schema": "scout"},
     )
 
@@ -1689,5 +1764,63 @@ class ProviderUsageEvent(Base):
         ),
         Index("ix_provider_usage_events_workspace", "workspace_id"),
         Index("ix_provider_usage_events_reservation", "reservation_id"),
+        {"schema": "scout"},
+    )
+
+
+class ExportJob(Base):
+    __tablename__ = "export_jobs"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    requested_by_user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.user_profiles.user_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    filter_snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    selected_fields_json: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("row_count >= 0", name="row_count_nonnegative"),
+        CheckConstraint("status in ('succeeded', 'failed')", name="status_valid"),
+        Index("ix_export_jobs_workspace_created", "workspace_id", "created_at", "id"),
+        Index("ix_export_jobs_requester", "requested_by_user_id"),
+        {"schema": "scout"},
+    )
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    actor_user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.user_profiles.user_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    action: Mapped[str] = mapped_column(String(80), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    target_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    request_id: Mapped[str | None] = mapped_column(String(120))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_audit_events_workspace_occurred", "workspace_id", "occurred_at", "id"),
+        Index("ix_audit_events_actor", "actor_user_id", "occurred_at"),
         {"schema": "scout"},
     )

@@ -4,6 +4,7 @@ import base64
 import csv
 import io
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
@@ -45,6 +46,27 @@ class LeadNotFoundError(LookupError):
 class LeadFilters:
     disposition: str | None = None
     min_score: int | None = None
+
+
+@dataclass(slots=True)
+class CsvExportProgress:
+    """Mutable export progress shared with the streaming response audit lifecycle."""
+
+    row_count: int = 0
+
+
+LEAD_EXPORT_FIELDS = [
+    "lead_id",
+    "company_name",
+    "domain",
+    "country_code",
+    "industry",
+    "employee_count",
+    "match_status",
+    "disposition",
+    "score",
+    "created_at",
+]
 
 
 def list_leads(
@@ -168,45 +190,71 @@ def export_leads_csv(
 ) -> str:
     """Export allow-listed lead fields with spreadsheet-formula neutralization."""
 
-    page = list_leads(
-        session=session,
-        settings=settings,
-        filters=filters,
-        limit=max_rows,
-        cursor=None,
-    )
-    buffer = io.StringIO(newline="")
-    writer = csv.writer(buffer, lineterminator="\n")
-    writer.writerow(
-        [
-            "lead_id",
-            "company_name",
-            "domain",
-            "country_code",
-            "industry",
-            "employee_count",
-            "match_status",
-            "disposition",
-            "score",
-            "created_at",
-        ]
-    )
-    for item in page.items:
-        writer.writerow(
-            [
-                str(item.id),
-                _safe_spreadsheet_cell(item.company_name),
-                _safe_spreadsheet_cell(item.normalized_domain),
-                item.country_code or "",
-                item.industry or "",
-                item.employee_count if item.employee_count is not None else "",
-                item.match_status,
-                item.disposition,
-                item.score,
-                item.created_at.isoformat(),
-            ]
+    progress = CsvExportProgress()
+    return "".join(
+        stream_leads_csv(
+            session=session,
+            settings=settings,
+            filters=filters,
+            progress=progress,
+            max_rows=max_rows,
         )
-    return buffer.getvalue()
+    )
+
+
+def stream_leads_csv(
+    *,
+    session: Session,
+    settings: Settings,
+    filters: LeadFilters,
+    progress: CsvExportProgress,
+    batch_size: int = 500,
+    max_rows: int | None = None,
+) -> Iterator[str]:
+    """Yield formula-safe CSV in bounded keyset-paginated batches."""
+
+    if batch_size < 1 or batch_size > 2_000:
+        raise ValueError("batch_size must be between 1 and 2000")
+    header = io.StringIO(newline="")
+    csv.writer(header, lineterminator="\n").writerow(LEAD_EXPORT_FIELDS)
+    yield header.getvalue()
+
+    cursor: str | None = None
+    while max_rows is None or progress.row_count < max_rows:
+        remaining = batch_size
+        if max_rows is not None:
+            remaining = min(remaining, max_rows - progress.row_count)
+        page = list_leads(
+            session=session,
+            settings=settings,
+            filters=filters,
+            limit=remaining,
+            cursor=cursor,
+        )
+        if not page.items:
+            break
+        buffer = io.StringIO(newline="")
+        writer = csv.writer(buffer, lineterminator="\n")
+        for item in page.items:
+            writer.writerow(
+                [
+                    str(item.id),
+                    _safe_spreadsheet_cell(item.company_name),
+                    _safe_spreadsheet_cell(item.normalized_domain),
+                    item.country_code or "",
+                    item.industry or "",
+                    item.employee_count if item.employee_count is not None else "",
+                    item.match_status,
+                    item.disposition,
+                    item.score,
+                    item.created_at.isoformat(),
+                ]
+            )
+            progress.row_count += 1
+        yield buffer.getvalue()
+        if page.next_cursor is None:
+            break
+        cursor = page.next_cursor
 
 
 def _lead_select(

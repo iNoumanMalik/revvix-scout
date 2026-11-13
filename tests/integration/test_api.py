@@ -4,7 +4,11 @@ import os
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, delete, select, text, update
+from sqlalchemy.orm import Session
+
+from revvix_scout.config import get_settings
+from revvix_scout.db.models import AuditEvent, ExportJob, WorkspaceMember
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "businesses_v1.csv"
 DISCOVERY_FIXTURE = Path(__file__).parents[1] / "fixtures" / "discovery_candidates_v1.csv"
@@ -21,6 +25,142 @@ def _import_fixture(client: TestClient) -> dict[str, object]:
 
 def test_health_checks_postgres(client: TestClient) -> None:
     assert client.get("/health").json() == {"status": "ok"}
+
+
+def test_session_requires_active_workspace_membership(client: TestClient) -> None:
+    session_response = client.get("/v1/session")
+    assert session_response.status_code == 200
+    assert session_response.json() == {
+        "user_id": "00000000-0000-4000-8000-000000000011",
+        "workspace_id": "00000000-0000-4000-8000-000000000001",
+        "role": "owner",
+        "display_name": "Local Owner",
+        "auth_mode": "development",
+        "capabilities": ["export", "ingest", "privacy", "read", "review", "run_pipeline"],
+    }
+
+    settings = get_settings()
+    engine = create_engine(settings.database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            delete(WorkspaceMember).where(
+                WorkspaceMember.workspace_id == settings.default_workspace_id,
+                WorkspaceMember.user_id == settings.development_user_id,
+            )
+        )
+    engine.dispose()
+    assert client.get("/v1/leads").status_code == 403
+
+
+def test_viewer_can_read_but_cannot_mutate_or_export(client: TestClient) -> None:
+    settings = get_settings()
+    engine = create_engine(settings.database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            update(WorkspaceMember)
+            .where(
+                WorkspaceMember.workspace_id == settings.default_workspace_id,
+                WorkspaceMember.user_id == settings.development_user_id,
+            )
+            .values(role="viewer")
+        )
+    engine.dispose()
+
+    assert client.get("/v1/leads").status_code == 200
+    assert client.get("/v1/leads/export.csv").status_code == 403
+    mutation = client.post(
+        "/v1/imports/business-csv",
+        files={"file": ("businesses.csv", FIXTURE.read_bytes(), "text/csv")},
+    )
+    assert mutation.status_code == 403
+
+
+def test_reviewer_can_decide_but_cannot_ingest_run_pipelines_or_export(
+    client: TestClient,
+) -> None:
+    settings = get_settings()
+    engine = create_engine(settings.database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            update(WorkspaceMember)
+            .where(
+                WorkspaceMember.workspace_id == settings.default_workspace_id,
+                WorkspaceMember.user_id == settings.development_user_id,
+            )
+            .values(role="reviewer")
+        )
+    engine.dispose()
+
+    session = client.get("/v1/session")
+    assert session.status_code == 200
+    assert session.json()["capabilities"] == ["read", "review"]
+    assert client.get("/v1/review-queue").status_code == 200
+    assert client.get("/v1/leads/export.csv").status_code == 403
+    assert (
+        client.post(
+            "/v1/imports/business-csv",
+            files={"file": ("businesses.csv", FIXTURE.read_bytes(), "text/csv")},
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            "/v1/discovery-runs",
+            json={
+                "provider_key": "fictional_accounting_directory",
+                "search_text": "fictional firms",
+                "country_code": "GB",
+                "region": "England",
+                "limit": 1,
+                "idempotency_key": "reviewer-denied-pipeline",
+            },
+        ).status_code
+        == 403
+    )
+    allowed_review = client.post(
+        "/v1/individual-candidates/00000000-0000-4000-8000-000000000099/review",
+        json={"action": "reject", "reason": "Reviewer checked fictional candidate"},
+    )
+    assert allowed_review.status_code == 404
+
+
+def test_automation_can_run_pipelines_but_cannot_impersonate_human_review(
+    client: TestClient,
+) -> None:
+    settings = get_settings()
+    engine = create_engine(settings.database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            update(WorkspaceMember)
+            .where(
+                WorkspaceMember.workspace_id == settings.default_workspace_id,
+                WorkspaceMember.user_id == settings.development_user_id,
+            )
+            .values(role="automation")
+        )
+    engine.dispose()
+
+    session = client.get("/v1/session")
+    assert session.status_code == 200
+    assert session.json()["capabilities"] == ["read", "run_pipeline"]
+    pipeline = client.post(
+        "/v1/discovery-runs",
+        json={
+            "provider_key": "fictional_accounting_directory",
+            "search_text": "fictional firms",
+            "country_code": "GB",
+            "region": "England",
+            "limit": 1,
+            "idempotency_key": "automation-pipeline-allowed",
+        },
+    )
+    assert pipeline.status_code == 200, pipeline.text
+    denied_review = client.post(
+        "/v1/individual-candidates/00000000-0000-4000-8000-000000000099/review",
+        json={"action": "reject", "reason": "Machine must not make human decision"},
+    )
+    assert denied_review.status_code == 403
+    assert client.get("/v1/leads/export.csv").status_code == 403
 
 
 def test_partial_import_deduplicates_and_is_idempotent(client: TestClient) -> None:
@@ -101,8 +241,10 @@ def test_csv_export_is_allow_listed_and_neutralizes_formulas(client: TestClient)
     )
     assert imported.status_code == 200, imported.text
 
-    response = client.get("/v1/leads/export.csv")
+    response = client.get("/v1/leads/export.csv", headers={"x-request-id": "export-test-001"})
     assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
     rows = list(csv.DictReader(io.StringIO(response.text)))
     assert rows[0]["company_name"].startswith("'=HYPERLINK")
     assert set(rows[0]) == {
@@ -117,6 +259,25 @@ def test_csv_export_is_allow_listed_and_neutralizes_formulas(client: TestClient)
         "score",
         "created_at",
     }
+
+    engine = create_engine(get_settings().database_url)
+    with Session(engine) as session:
+        export_job = session.scalar(select(ExportJob))
+        audit_event = session.scalar(select(AuditEvent))
+        assert export_job is not None
+        assert export_job.row_count == 1
+        assert export_job.status == "succeeded"
+        assert export_job.filter_snapshot_json == {
+            "disposition": None,
+            "min_score": None,
+        }
+        assert audit_event is not None
+        assert audit_event.action == "lead_export.succeeded"
+        assert audit_event.target_id == export_job.id
+        assert audit_event.request_id == "export-test-001"
+        assert audit_event.metadata_json["row_count"] == 1
+        assert audit_event.metadata_json["streamed"] is True
+    engine.dispose()
 
 
 def test_file_contract_errors_do_not_create_partial_jobs(client: TestClient) -> None:

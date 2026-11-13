@@ -67,7 +67,8 @@ def resolve_individual_candidate(
 
     existing_decision = session.scalar(
         select(IndividualReviewDecision).where(
-            IndividualReviewDecision.candidate_id == candidate.id
+            IndividualReviewDecision.candidate_id == candidate.id,
+            IndividualReviewDecision.reversed_at.is_(None),
         )
     )
     if existing_decision is not None:
@@ -196,6 +197,65 @@ def resolve_individual_candidate(
     session.add(decision)
     session.commit()
     return _review_result(session=session, candidate=candidate, decision=decision)
+
+
+def reverse_individual_review(
+    *,
+    session: Session,
+    settings: Settings,
+    candidate_id: UUID,
+    actor_user_id: UUID,
+    reason: str,
+) -> IndividualDiscoveryCandidate:
+    """Reopen a rejected candidate while preserving its prior decision as history."""
+
+    candidate = session.scalar(
+        select(IndividualDiscoveryCandidate)
+        .where(
+            IndividualDiscoveryCandidate.id == candidate_id,
+            IndividualDiscoveryCandidate.workspace_id == settings.default_workspace_id,
+        )
+        .with_for_update()
+    )
+    if candidate is None:
+        raise IndividualCandidateNotFoundError(str(candidate_id))
+    decision = session.scalar(
+        select(IndividualReviewDecision)
+        .where(
+            IndividualReviewDecision.candidate_id == candidate.id,
+            IndividualReviewDecision.reversed_at.is_(None),
+        )
+        .with_for_update()
+    )
+    if decision is None:
+        latest = session.scalar(
+            select(IndividualReviewDecision)
+            .where(IndividualReviewDecision.candidate_id == candidate.id)
+            .order_by(
+                IndividualReviewDecision.decided_at.desc(),
+                IndividualReviewDecision.id.desc(),
+            )
+            .limit(1)
+        )
+        if (
+            latest is not None
+            and latest.reversed_at is not None
+            and candidate.status == "needs_review"
+        ):
+            return candidate
+        raise IndividualReviewConflictError("Candidate has no active review decision to reverse")
+    if decision.action != "reject":
+        raise IndividualReviewConflictError("Only plain rejection decisions can be safely reversed")
+
+    now = datetime.now(UTC)
+    decision.reversed_at = now
+    decision.reversal_reason = reason.strip()
+    decision.reversed_by_user_id = actor_user_id
+    candidate.status = "needs_review"
+    candidate.disposition = "review"
+    candidate.rejection_reason = None
+    session.commit()
+    return candidate
 
 
 def list_individual_leads(*, session: Session, settings: Settings) -> IndividualLeadPage:

@@ -67,6 +67,11 @@ def test_fictional_individual_pipeline_is_idempotent_and_keeps_common_names_sepa
     assert all(item["status"] == "new" for item in jordan_records)
     assert all(item["duplicate_person_id"] is None for item in jordan_records)
 
+    detail = client.get(f"/v1/individual-candidates/{jordan_records[0]['id']}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["professional_profile_url"].startswith("https://professionals.invalid/")
+    assert detail.json()["evidence_classification"] == "provider_asserted"
+
     replay = client.post("/v1/individual-discovery-runs", json=_request("individual-run-001"))
     assert replay.status_code == 200
     assert replay.json()["id"] == payload["id"]
@@ -355,6 +360,78 @@ def test_operator_explicitly_links_profile_to_existing_person_idempotently(
             == 1
         )
     engine.dispose()
+
+
+def test_plain_individual_rejection_can_be_reopened_without_erasing_history(
+    client: TestClient,
+) -> None:
+    discovery = client.post(
+        "/v1/individual-discovery-runs", json=_request("individual-reversal-001")
+    ).json()
+    candidate = next(
+        item for item in discovery["candidates"] if item["display_name"] == "Avery North"
+    )
+    rejected = client.post(
+        f"/v1/individual-candidates/{candidate['id']}/review",
+        json={"action": "reject", "reason": "Operator initially rejected this candidate"},
+    )
+    assert rejected.status_code == 200, rejected.text
+
+    reversal_request = {
+        "reason": "Operator corrected the original rejection after reviewing evidence."
+    }
+    reopened = client.post(
+        f"/v1/individual-candidates/{candidate['id']}/review/reverse",
+        json=reversal_request,
+    )
+    replayed = client.post(
+        f"/v1/individual-candidates/{candidate['id']}/review/reverse",
+        json=reversal_request,
+    )
+    assert reopened.status_code == replayed.status_code == 200
+    assert reopened.json()["status"] == "needs_review"
+    assert reopened.json()["rejection_reason"] is None
+
+    corrected = client.post(
+        f"/v1/individual-candidates/{candidate['id']}/review",
+        json={"action": "promote_new", "reason": "Operator approved the fictional lead"},
+    )
+    assert corrected.status_code == 200, corrected.text
+
+    settings = get_settings()
+    engine = create_engine(settings.database_url)
+    with Session(engine) as session:
+        decisions = session.scalars(
+            select(IndividualReviewDecision)
+            .where(IndividualReviewDecision.candidate_id == candidate["id"])
+            .order_by(IndividualReviewDecision.decided_at)
+        ).all()
+        assert len(decisions) == 2
+        assert decisions[0].action == "reject"
+        assert decisions[0].reversed_at is not None
+        assert decisions[0].reversed_by_user_id is not None
+        assert decisions[1].action == "promote_new"
+        assert decisions[1].reversed_at is None
+    engine.dispose()
+
+
+def test_suppression_decision_cannot_be_reversed(client: TestClient) -> None:
+    discovery = client.post(
+        "/v1/individual-discovery-runs", json=_request("individual-suppress-reversal-001")
+    ).json()
+    candidate = next(
+        item for item in discovery["candidates"] if item["display_name"] == "Avery North"
+    )
+    suppressed = client.post(
+        f"/v1/individual-candidates/{candidate['id']}/review",
+        json={"action": "suppress", "reason": "Test fictional profile suppression"},
+    )
+    assert suppressed.status_code == 200, suppressed.text
+    reversal = client.post(
+        f"/v1/individual-candidates/{candidate['id']}/review/reverse",
+        json={"reason": "Attempt to reopen a privacy-sensitive suppression decision."},
+    )
+    assert reversal.status_code == 409
 
 
 def test_profile_suppression_blocks_rediscovery_without_storing_raw_profile(

@@ -1,6 +1,7 @@
 """Typed application settings."""
 
 from functools import lru_cache
+from typing import Literal
 from uuid import UUID
 
 from pydantic import Field
@@ -20,6 +21,10 @@ class Settings(BaseSettings):
     app_name: str = "Revvix Scout"
     environment: str = "development"
     database_url: str = "postgresql+psycopg://localhost/revvix_scout"
+    auth_mode: Literal["development", "supabase"] = "development"
+    supabase_url: str | None = None
+    supabase_publishable_key: str | None = None
+    development_user_id: UUID = Field(default=UUID("00000000-0000-4000-8000-000000000011"))
     default_workspace_id: UUID = Field(default=UUID("00000000-0000-4000-8000-000000000001"))
     default_icp_id: UUID = Field(default=UUID("00000000-0000-4000-8000-000000000101"))
     default_icp_version_id: UUID = Field(default=UUID("00000000-0000-4000-8000-000000000102"))

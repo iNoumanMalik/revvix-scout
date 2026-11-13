@@ -7,7 +7,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from revvix_scout import __version__
-from revvix_scout.api.router import router
+from revvix_scout.api.router import public_router, router
 from revvix_scout.application.bootstrap import bootstrap_defaults
 from revvix_scout.config import get_settings
 from revvix_scout.db.session import get_session_factory
@@ -32,6 +32,7 @@ def create_app() -> FastAPI:
         ),
         lifespan=lifespan,
     )
+    app.include_router(public_router)
     app.include_router(router)
     return app
 

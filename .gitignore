@@ -12,6 +12,11 @@ __pycache__/
 .coverage.*
 htmlcov/
 
+# Node dependencies and generated frontend output
+node_modules/
+dist/
+*.tsbuildinfo
+
 # Local configuration and secrets
 .env
 .env.*

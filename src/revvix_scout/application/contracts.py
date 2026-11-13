@@ -30,6 +30,43 @@ TechnologyNeed = Literal[
 ]
 
 
+class SessionView(BaseModel):
+    user_id: UUID
+    workspace_id: UUID
+    role: str
+    display_name: str
+    auth_mode: Literal["development", "supabase"]
+    capabilities: list[str]
+
+
+class ReviewQueueItem(BaseModel):
+    """One operator-review item with only allow-listed decision context."""
+
+    id: UUID
+    kind: Literal[
+        "business_lead",
+        "individual_candidate",
+        "entity_match",
+        "opportunity_hypothesis",
+    ]
+    title: str
+    summary: str
+    status: str
+    created_at: datetime
+    primary_subject_id: UUID
+    secondary_subject_id: UUID | None = None
+    lead_id: UUID | None = None
+    source_url: str | None = None
+    score: float | None = None
+    possible_match_person_id: UUID | None = None
+    allowed_actions: list[str] = Field(default_factory=list)
+
+
+class ReviewQueuePage(BaseModel):
+    items: list[ReviewQueueItem]
+    counts: dict[str, int]
+
+
 class BusinessImportRow(BaseModel):
     """Version 1 contract for one provider-free business import row."""
 
@@ -444,6 +481,10 @@ class OpportunityAnalysisRunView(BaseModel):
 
 class OpportunityReviewRequest(BaseModel):
     decision: Literal["accept", "reject"]
+    reason: Annotated[str, Field(min_length=8, max_length=500)]
+
+
+class ReviewReversalRequest(BaseModel):
     reason: Annotated[str, Field(min_length=8, max_length=500)]
 
 

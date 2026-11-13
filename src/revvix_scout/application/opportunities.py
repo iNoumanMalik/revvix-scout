@@ -309,6 +309,61 @@ def review_opportunity_hypothesis(
     return hypothesis
 
 
+def reverse_opportunity_review(
+    *,
+    session: Session,
+    settings: Settings,
+    hypothesis_id: UUID,
+    actor_user_id: UUID,
+    reason: str,
+) -> OpportunityHypothesis:
+    """Reopen a reviewed hypothesis without deleting its prior operator decision."""
+
+    hypothesis = session.scalar(
+        select(OpportunityHypothesis)
+        .where(
+            OpportunityHypothesis.id == hypothesis_id,
+            OpportunityHypothesis.workspace_id == settings.default_workspace_id,
+        )
+        .with_for_update()
+    )
+    if hypothesis is None:
+        raise OpportunityAnalysisError("Opportunity hypothesis not found")
+    decision = session.scalar(
+        select(OpportunityReviewDecision)
+        .where(
+            OpportunityReviewDecision.hypothesis_id == hypothesis.id,
+            OpportunityReviewDecision.reversed_at.is_(None),
+        )
+        .with_for_update()
+    )
+    if decision is None:
+        latest = session.scalar(
+            select(OpportunityReviewDecision)
+            .where(OpportunityReviewDecision.hypothesis_id == hypothesis.id)
+            .order_by(
+                OpportunityReviewDecision.decided_at.desc(),
+                OpportunityReviewDecision.id.desc(),
+            )
+            .limit(1)
+        )
+        if (
+            latest is not None
+            and latest.reversed_at is not None
+            and hypothesis.review_status == "unreviewed"
+        ):
+            return hypothesis
+        raise OpportunityAnalysisError("Opportunity hypothesis has no active review to reverse")
+
+    now = datetime.now(UTC)
+    decision.reversed_at = now
+    decision.reversal_reason = reason.strip()
+    decision.reversed_by_user_id = actor_user_id
+    hypothesis.review_status = "unreviewed"
+    session.commit()
+    return hypothesis
+
+
 def _persist_analysis(
     session: Session,
     settings: Settings,

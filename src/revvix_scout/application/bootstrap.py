@@ -14,7 +14,9 @@ from revvix_scout.db.models import (
     IcpConfig,
     IcpVersion,
     ProviderConfig,
+    UserProfile,
     Workspace,
+    WorkspaceMember,
 )
 from revvix_scout.domain.individuals import development_individual_icp_definition
 from revvix_scout.domain.opportunities import (
@@ -38,6 +40,30 @@ def bootstrap_defaults(session: Session, settings: Settings) -> None:
             )
         )
         session.flush()
+
+    if settings.auth_mode == "development":
+        profile = session.get(UserProfile, settings.development_user_id)
+        if profile is None:
+            session.add(
+                UserProfile(
+                    user_id=settings.development_user_id,
+                    display_name="Local Owner",
+                )
+            )
+            session.flush()
+        membership = session.get(
+            WorkspaceMember,
+            (settings.default_workspace_id, settings.development_user_id),
+        )
+        if membership is None:
+            session.add(
+                WorkspaceMember(
+                    workspace_id=settings.default_workspace_id,
+                    user_id=settings.development_user_id,
+                    role="owner",
+                    status="active",
+                )
+            )
 
     icp = session.get(IcpConfig, settings.default_icp_id)
     if icp is None:
