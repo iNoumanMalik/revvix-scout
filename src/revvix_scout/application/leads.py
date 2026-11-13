@@ -225,7 +225,10 @@ def _lead_select(
         .join(Company, Company.id == Lead.company_id)
         .outerjoin(CompanyDomain, CompanyDomain.company_id == Company.id)
         .join(ScoreRun, ScoreRun.id == latest_score_id)
-        .where(Lead.workspace_id == settings.default_workspace_id)
+        .where(
+            Lead.workspace_id == settings.default_workspace_id,
+            Lead.pipeline_kind == "business",
+        )
         .order_by(Lead.created_at.desc(), Lead.id.desc())
     )
     if filters.disposition is not None:

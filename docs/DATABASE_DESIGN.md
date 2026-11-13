@@ -1,9 +1,9 @@
 # Database design
 
-**Status:** Long-term logical design. The M2A subset is implemented in the initial Alembic migration.  
+**Status:** Long-term logical design. M2A, M3, and the approved fictional-only M4 schema are implemented locally.
 **Target:** PostgreSQL 15+ / Supabase PostgreSQL
 
-The implemented subset contains the M2A qualification records plus M3 provider configuration, jobs/attempts, discovery runs/candidates, budget policies/reservations, and provider usage events. It lives in the non-exposed `scout` schema with RLS enabled and no browser/Data API grants. Authentication, membership policies, people, contacts, outreach, and other later entities remain planned.
+The implemented model contains the M2A qualification records plus M3 provider configuration, jobs/attempts, discovery runs/candidates, budget policies/reservations, and provider usage events. M4 revision `410360f37f0b` adds people, canonical public-profile identities, and individual discovery candidates. Completion revision `20a7a62a7d6a` adds append-only review decisions, minimal suppressions, and exactly-one-subject business/person leads. It lives in the non-exposed `scout` schema with RLS enabled and no browser/Data API grants. Authentication, membership policies, contacts, outreach, and other later entities remain planned.
 
 ## 1. Design principles
 
@@ -99,7 +99,7 @@ Constraints:
 
 ### `people`
 
-`workspace_id`, display/given/family names, normalized name, locality/region/country, public professional profile URL, status, first/last seen. Names are never unique identifiers.
+The M4 subset stores `workspace_id`, display/normalized name, locality/region/country, status, fictional flag, retention expiry, and first/last seen. Names are never unique identifiers. Public professional identities are stored separately in `person_profiles`, with unique workspace-scoped canonical URL and provider-record constraints; exact profile URLs may resolve duplicates while names only create review suggestions.
 
 ### `person_company_roles`
 
@@ -123,11 +123,13 @@ Possible duplicate pairs store algorithm version, features, score, status, and r
 
 `workspace_id`, pipeline kind, ICP version, source/provider, query definition, status, requested/started/completed timestamps, cursor metadata, candidate counts, budget snapshot, creator.
 
-### `discovery_candidates`
+### `discovery_candidates` and `individual_discovery_candidates`
 
 Append-oriented thin records: `discovery_run_id`, source record ID, raw-reference metadata, original/normalized name/domain/profile/location fields, fingerprint, status (`new`, `duplicate`, `possible_match`, `rejected`, `promoted`), resolved entity ID, reason, timestamps.
 
 Unique `(discovery_run_id, source_record_id)` where supplied and `(discovery_run_id, fingerprint)` as a fallback. Cross-run identity resolution happens through match keys, not by discarding candidate history.
+
+The M4 individual table keeps only allow-listed fictional professional fields, deterministic qualification output, source/observation metadata, and either an exact duplicate person or a possible-match person—not both. A check requires `retention_expires_at` whenever a record is not fictional. Provider contracts intentionally contain no contact fields.
 
 ### `source_documents`
 

@@ -23,4 +23,4 @@ Provider-specific shorter periods override these defaults. Each provider configu
 4. Require suppression checks and recorded human approval for any draft handoff or external message.
 5. Support correction, access/export, erasure/anonymization, and opt-out requests without deleting the minimal suppression record needed to prevent re-contact.
 
-M3 uses fictional companies only, contains no personal contacts, and performs no external request.
+M3 uses fictional companies only. The M4 development slice uses invented professional identities under `.invalid` URLs, contains no contact details, and performs no external request. Profile suppression retains only a SHA-256 canonical-profile key; person suppression retains a person reference and reason category, with no free-text personal note. Active suppression blocks promotion and rediscovery. The M4 schema requires a retention expiry for any future non-fictional person or candidate, but this constraint does not authorize collection; the full legal/source gate above remains mandatory.

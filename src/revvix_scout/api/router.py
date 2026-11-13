@@ -1,4 +1,4 @@
-"""Versioned FastAPI routes for the M2A slice."""
+"""Versioned FastAPI routes for provider-free business and individual slices."""
 
 from typing import Annotated, Literal
 from uuid import UUID
@@ -13,18 +13,39 @@ from revvix_scout.application.contracts import (
     DiscoveryRunRequest,
     DiscoveryRunView,
     ImportSummary,
+    IndividualCandidateView,
+    IndividualDiscoveryRunRequest,
+    IndividualDiscoveryRunView,
+    IndividualLeadPage,
+    IndividualReviewRequest,
+    IndividualReviewResult,
     LeadDetail,
     LeadPage,
     ManualDiscoveryRequest,
+    PersonSuppressionRequest,
+    PersonSuppressionView,
 )
 from revvix_scout.application.discovery import (
-    BudgetExceededError,
     DiscoveryError,
     ProviderDisabledError,
     execute_discovery,
     process_discovery_run,
 )
 from revvix_scout.application.imports import ImportContractError, import_business_csv
+from revvix_scout.application.individual_discovery import (
+    IndividualCollectionNotApprovedError,
+    IndividualDiscoveryError,
+    execute_individual_discovery,
+)
+from revvix_scout.application.individual_leads import (
+    IndividualCandidateNotFoundError,
+    IndividualReviewConflictError,
+    IndividualSuppressedError,
+    PersonNotFoundError,
+    list_individual_leads,
+    resolve_individual_candidate,
+    suppress_person,
+)
 from revvix_scout.application.leads import (
     InvalidCursorError,
     LeadFilters,
@@ -33,8 +54,15 @@ from revvix_scout.application.leads import (
     get_lead_detail,
     list_leads,
 )
+from revvix_scout.application.usage import BudgetExceededError
 from revvix_scout.config import Settings, get_settings
-from revvix_scout.db.models import DiscoveryCandidate, DiscoveryRun, Job, JobAttempt
+from revvix_scout.db.models import (
+    DiscoveryCandidate,
+    DiscoveryRun,
+    IndividualDiscoveryCandidate,
+    Job,
+    JobAttempt,
+)
 from revvix_scout.db.session import get_db_session
 from revvix_scout.providers.contracts import (
     DiscoveredBusiness,
@@ -42,12 +70,20 @@ from revvix_scout.providers.contracts import (
     ProviderNotRegisteredError,
 )
 from revvix_scout.providers.csv_input import CsvDiscoveryContractError, CsvInputProvider
-from revvix_scout.providers.registry import create_provider_registry
+from revvix_scout.providers.individual_contracts import (
+    IndividualDiscoveryQuery,
+    IndividualProviderNotRegisteredError,
+)
+from revvix_scout.providers.registry import (
+    create_individual_provider_registry,
+    create_provider_registry,
+)
 
 router = APIRouter()
 DbSession = Annotated[Session, Depends(get_db_session)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
 provider_registry = create_provider_registry()
+individual_provider_registry = create_individual_provider_registry()
 
 
 @router.get("/health", tags=["system"])
@@ -270,11 +306,141 @@ def read_discovery_run(run_id: UUID, session: DbSession, settings: AppSettings) 
         select(DiscoveryRun).where(
             DiscoveryRun.id == run_id,
             DiscoveryRun.workspace_id == settings.default_workspace_id,
+            DiscoveryRun.pipeline_kind == "business",
         )
     )
     if run is None:
         raise HTTPException(status_code=404, detail="Discovery run not found")
     return _discovery_view(session, run)
+
+
+@router.post(
+    "/v1/individual-discovery-runs",
+    response_model=IndividualDiscoveryRunView,
+    tags=["individual-discovery"],
+)
+def create_individual_discovery_run(
+    request: IndividualDiscoveryRunRequest,
+    session: DbSession,
+    settings: AppSettings,
+) -> IndividualDiscoveryRunView:
+    """Run one bounded page against the fictional-only individual adapter."""
+
+    try:
+        run = execute_individual_discovery(
+            session=session,
+            settings=settings,
+            registry=individual_provider_registry,
+            provider_key=request.provider_key,
+            query=IndividualDiscoveryQuery(
+                search_text=request.search_text,
+                country_code=request.country_code,
+                region=request.region,
+                limit=request.limit,
+                cursor=request.cursor,
+            ),
+            idempotency_key=request.idempotency_key,
+        )
+    except IndividualProviderNotRegisteredError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except IndividualCollectionNotApprovedError as exc:
+        session.rollback()
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except BudgetExceededError as exc:
+        session.rollback()
+        raise HTTPException(status_code=402, detail=str(exc)) from exc
+    except IndividualDiscoveryError as exc:
+        session.rollback()
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return _individual_discovery_view(session, run)
+
+
+@router.get(
+    "/v1/individual-discovery-runs/{run_id}",
+    response_model=IndividualDiscoveryRunView,
+    tags=["individual-discovery"],
+)
+def read_individual_discovery_run(
+    run_id: UUID, session: DbSession, settings: AppSettings
+) -> IndividualDiscoveryRunView:
+    run = session.scalar(
+        select(DiscoveryRun).where(
+            DiscoveryRun.id == run_id,
+            DiscoveryRun.workspace_id == settings.default_workspace_id,
+            DiscoveryRun.pipeline_kind == "individual",
+        )
+    )
+    if run is None:
+        raise HTTPException(status_code=404, detail="Individual discovery run not found")
+    return _individual_discovery_view(session, run)
+
+
+@router.post(
+    "/v1/individual-candidates/{candidate_id}/review",
+    response_model=IndividualReviewResult,
+    tags=["individual-discovery"],
+)
+def review_individual_candidate(
+    candidate_id: UUID,
+    request: IndividualReviewRequest,
+    session: DbSession,
+    settings: AppSettings,
+) -> IndividualReviewResult:
+    """Record one final human decision and optionally promote a fictional person lead."""
+
+    try:
+        return resolve_individual_candidate(
+            session=session,
+            settings=settings,
+            candidate_id=candidate_id,
+            request=request,
+        )
+    except (IndividualCandidateNotFoundError, PersonNotFoundError) as exc:
+        session.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except IndividualSuppressedError as exc:
+        session.rollback()
+        raise HTTPException(status_code=423, detail=str(exc)) from exc
+    except IndividualReviewConflictError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get(
+    "/v1/individual-leads",
+    response_model=IndividualLeadPage,
+    tags=["individual-leads"],
+)
+def read_individual_leads(session: DbSession, settings: AppSettings) -> IndividualLeadPage:
+    """List fictional person-subject leads independently of business leads."""
+
+    return list_individual_leads(session=session, settings=settings)
+
+
+@router.post(
+    "/v1/people/{person_id}/suppress",
+    response_model=PersonSuppressionView,
+    tags=["individual-leads"],
+)
+def create_person_suppression(
+    person_id: UUID,
+    request: PersonSuppressionRequest,
+    session: DbSession,
+    settings: AppSettings,
+) -> PersonSuppressionView:
+    """Suppress one person and disqualify their individual lead."""
+
+    try:
+        return suppress_person(
+            session=session,
+            settings=settings,
+            person_id=person_id,
+            reason_category=request.reason_category,
+        )
+    except PersonNotFoundError as exc:
+        session.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 def _discovery_view(session: Session, run: DiscoveryRun) -> DiscoveryRunView:
@@ -318,6 +484,60 @@ def _discovery_view(session: Session, run: DiscoveryRun) -> DiscoveryRunView:
                 observed_at=item.observed_at,
                 status=item.status,
                 rejection_reason=item.rejection_reason,
+            )
+            for item in candidates
+        ],
+    )
+
+
+def _individual_discovery_view(session: Session, run: DiscoveryRun) -> IndividualDiscoveryRunView:
+    job = session.get(Job, run.job_id)
+    if job is None:
+        raise IndividualDiscoveryError("Individual discovery run job not found")
+    attempt_count = session.scalar(
+        select(func.count()).select_from(JobAttempt).where(JobAttempt.job_id == job.id)
+    )
+    candidates = session.scalars(
+        select(IndividualDiscoveryCandidate)
+        .where(IndividualDiscoveryCandidate.discovery_run_id == run.id)
+        .order_by(IndividualDiscoveryCandidate.created_at, IndividualDiscoveryCandidate.id)
+    ).all()
+    return IndividualDiscoveryRunView(
+        id=run.id,
+        provider_key=run.provider_key,
+        status=run.status,
+        next_cursor=run.next_cursor,
+        discovered_count=run.discovered_count,
+        duplicate_count=run.duplicate_count,
+        rejected_count=run.rejected_count,
+        error_code=run.error_code,
+        error_message=run.error_message,
+        attempt_count=int(attempt_count or 0),
+        max_attempts=job.max_attempts,
+        candidates=[
+            IndividualCandidateView(
+                id=item.id,
+                provider_record_id=item.provider_record_id,
+                display_name=item.display_name,
+                professional_profile_url=item.professional_profile_url,
+                normalized_profile_url=item.normalized_profile_url,
+                persona=item.persona,
+                country_code=item.country_code,
+                region=item.region,
+                service_summary=item.service_summary,
+                has_professional_presence=item.has_professional_presence,
+                has_business_relevance=item.has_business_relevance,
+                is_fictional=item.is_fictional,
+                source_url=item.source_url,
+                observed_at=item.observed_at,
+                status=item.status,
+                disposition=item.disposition,
+                score=item.score,
+                maximum_score=item.maximum_score,
+                rejection_reason=item.rejection_reason,
+                possible_match_person_id=item.possible_match_person_id,
+                duplicate_person_id=item.duplicate_person_id,
+                evidence_classification=str(item.provenance_json["classification"]),
             )
             for item in candidates
         ],

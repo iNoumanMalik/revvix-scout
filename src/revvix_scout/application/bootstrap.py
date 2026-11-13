@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from revvix_scout.config import Settings
 from revvix_scout.db.models import BudgetPolicy, IcpConfig, IcpVersion, ProviderConfig, Workspace
+from revvix_scout.domain.individuals import development_individual_icp_definition
 from revvix_scout.domain.scoring import icp_definition
 
 
@@ -50,12 +51,44 @@ def bootstrap_defaults(session: Session, settings: Settings) -> None:
                 published_at=datetime.now(UTC),
             )
         )
+    individual_icp = session.get(IcpConfig, settings.individual_icp_id)
+    if individual_icp is None:
+        session.add(
+            IcpConfig(
+                id=settings.individual_icp_id,
+                workspace_id=settings.default_workspace_id,
+                name="Fictional Individual Prospect Development ICP",
+                pipeline_kind="individual",
+                status="active",
+            )
+        )
+        session.flush()
+    individual_version = session.get(IcpVersion, settings.individual_icp_version_id)
+    if individual_version is None:
+        session.add(
+            IcpVersion(
+                id=settings.individual_icp_version_id,
+                icp_config_id=settings.individual_icp_id,
+                version=1,
+                status="published",
+                definition_schema_version=1,
+                definition_json=development_individual_icp_definition(),
+                published_at=datetime.now(UTC),
+            )
+        )
     providers = (
-        ("fictional_accounting_directory", "fixture", 1, True),
-        ("manual_input", "manual", 0, False),
-        ("csv_input", "csv", 0, False),
+        ("fictional_accounting_directory", "fixture", "business_discovery", 1, True),
+        ("manual_input", "manual", "business_discovery", 0, False),
+        ("csv_input", "csv", "business_discovery", 0, False),
+        (
+            "fictional_professional_directory",
+            "fixture",
+            "individual_discovery",
+            1,
+            True,
+        ),
     )
-    for provider_key, adapter_kind, hard_limit, fictional_only in providers:
+    for provider_key, adapter_kind, operation, hard_limit, fictional_only in providers:
         provider = (
             session.query(ProviderConfig)
             .filter_by(
@@ -86,7 +119,7 @@ def bootstrap_defaults(session: Session, settings: Settings) -> None:
             .filter_by(
                 workspace_id=settings.default_workspace_id,
                 provider_key=provider_key,
-                operation="business_discovery",
+                operation=operation,
                 window_kind="run",
             )
             .one_or_none()
@@ -96,7 +129,7 @@ def bootstrap_defaults(session: Session, settings: Settings) -> None:
                 BudgetPolicy(
                     workspace_id=settings.default_workspace_id,
                     provider_key=provider_key,
-                    operation="business_discovery",
+                    operation=operation,
                     window_kind="run",
                     hard_limit_units=hard_limit,
                     enabled=True,

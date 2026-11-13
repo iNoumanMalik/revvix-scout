@@ -1,8 +1,4 @@
-"""M2A PostgreSQL persistence model.
-
-The model intentionally contains only the provider-free business qualification slice.
-Future milestones extend it rather than pre-creating unused platform tables.
-"""
+"""PostgreSQL persistence for provider-free business and individual discovery."""
 
 from datetime import UTC, datetime
 from typing import Any
@@ -161,6 +157,79 @@ class CompanyDomain(Base):
     )
 
 
+class Person(Base, TimestampMixin):
+    __tablename__ = "people"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    display_name: Mapped[str] = mapped_column(String(240), nullable=False)
+    normalized_name: Mapped[str] = mapped_column(String(240), nullable=False)
+    country_code: Mapped[str | None] = mapped_column(String(2))
+    region: Mapped[str | None] = mapped_column(String(120))
+    locality: Mapped[str | None] = mapped_column(String(160))
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="active")
+    is_fictional: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    retention_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('active', 'needs_review', 'suppressed', 'deleted')",
+            name="status_valid",
+        ),
+        CheckConstraint(
+            "is_fictional or retention_expires_at is not null",
+            name="personal_data_requires_retention",
+        ),
+        Index("ix_people_workspace_normalized_name", "workspace_id", "normalized_name"),
+        Index("ix_people_workspace_created", "workspace_id", "created_at", "id"),
+        {"schema": "scout"},
+    )
+
+
+class PersonProfile(Base):
+    __tablename__ = "person_profiles"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    person_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.people.id", ondelete="CASCADE"), nullable=False
+    )
+    provider_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    provider_record_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    original_url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    normalized_url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    verification_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="source_asserted"
+    )
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "normalized_url", name="uq_person_profiles_workspace_url"),
+        UniqueConstraint(
+            "workspace_id",
+            "provider_key",
+            "provider_record_id",
+            name="uq_person_profiles_workspace_provider_record",
+        ),
+        CheckConstraint(
+            "verification_status in ('source_asserted', 'human_verified', 'invalid')",
+            name="verification_status_valid",
+        ),
+        Index("ix_person_profiles_person_id", "person_id"),
+        {"schema": "scout"},
+    )
+
+
 class Lead(Base, TimestampMixin):
     __tablename__ = "leads"
 
@@ -168,8 +237,11 @@ class Lead(Base, TimestampMixin):
     workspace_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
     )
-    company_id: Mapped[UUID] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("scout.companies.id", ondelete="CASCADE"), nullable=False
+    company_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.companies.id", ondelete="CASCADE")
+    )
+    person_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.people.id", ondelete="CASCADE")
     )
     icp_version_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
@@ -183,14 +255,40 @@ class Lead(Base, TimestampMixin):
     last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("workspace_id", "icp_version_id", "company_id"),
-        CheckConstraint("pipeline_kind = 'business'", name="m2a_business_only"),
+        CheckConstraint(
+            "(pipeline_kind = 'business' and company_id is not null and person_id is null) or "
+            "(pipeline_kind = 'individual' and person_id is not null and company_id is null)",
+            name="subject_matches_pipeline",
+        ),
+        CheckConstraint(
+            "stage in ('qualified', 'review', 'suppressed', 'archived')",
+            name="stage_valid",
+        ),
         CheckConstraint(
             "disposition in ('qualified', 'review', 'unqualified', 'disqualified')",
             name="disposition_valid",
         ),
         Index("ix_leads_workspace_created", "workspace_id", "created_at", "id"),
         Index("ix_leads_workspace_disposition", "workspace_id", "disposition"),
+        Index("ix_leads_icp_version_id", "icp_version_id"),
+        Index("ix_leads_company_id", "company_id"),
+        Index("ix_leads_person_id", "person_id"),
+        Index(
+            "uq_leads_business_subject",
+            "workspace_id",
+            "icp_version_id",
+            "company_id",
+            unique=True,
+            postgresql_where=text("pipeline_kind = 'business'"),
+        ),
+        Index(
+            "uq_leads_individual_subject",
+            "workspace_id",
+            "icp_version_id",
+            "person_id",
+            unique=True,
+            postgresql_where=text("pipeline_kind = 'individual'"),
+        ),
         {"schema": "scout"},
     )
 
@@ -542,6 +640,7 @@ class DiscoveryRun(Base, TimestampMixin):
         nullable=False,
     )
     provider_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    pipeline_kind: Mapped[str] = mapped_column(String(24), nullable=False, default="business")
     request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     request_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued")
@@ -557,6 +656,7 @@ class DiscoveryRun(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("job_id"),
         UniqueConstraint("workspace_id", "request_fingerprint"),
+        CheckConstraint("pipeline_kind in ('business', 'individual')", name="pipeline_kind_valid"),
         CheckConstraint(
             "status in ('queued', 'running', 'succeeded', 'partially_succeeded', 'failed')",
             name="status_valid",
@@ -607,6 +707,192 @@ class DiscoveryCandidate(Base, TimestampMixin):
             name="status_valid",
         ),
         Index("ix_discovery_candidates_run_created", "discovery_run_id", "created_at", "id"),
+        {"schema": "scout"},
+    )
+
+
+class IndividualDiscoveryCandidate(Base, TimestampMixin):
+    __tablename__ = "individual_discovery_candidates"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    discovery_run_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.discovery_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    provider_record_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    candidate_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(240), nullable=False)
+    normalized_name: Mapped[str] = mapped_column(String(240), nullable=False)
+    professional_profile_url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    normalized_profile_url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    persona: Mapped[str | None] = mapped_column(String(80))
+    country_code: Mapped[str | None] = mapped_column(String(2))
+    region: Mapped[str | None] = mapped_column(String(120))
+    service_summary: Mapped[str | None] = mapped_column(Text)
+    has_professional_presence: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    has_business_relevance: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    is_fictional: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    retention_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    disposition: Mapped[str] = mapped_column(String(24), nullable=False)
+    score: Mapped[int] = mapped_column(Integer, nullable=False)
+    maximum_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    rejection_reason: Mapped[str | None] = mapped_column(String(160))
+    possible_match_person_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.people.id", ondelete="SET NULL")
+    )
+    duplicate_person_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.people.id", ondelete="SET NULL")
+    )
+    qualification_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    provenance_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "discovery_run_id",
+            "provider_key",
+            "provider_record_id",
+            name="uq_individual_candidates_run_provider_record",
+        ),
+        CheckConstraint(
+            "status in ('new', 'needs_review', 'duplicate', 'rejected', 'promoted')",
+            name="status_valid",
+        ),
+        CheckConstraint(
+            "disposition in ('qualified', 'review', 'unqualified', 'disqualified')",
+            name="disposition_valid",
+        ),
+        CheckConstraint("score >= 0 and score <= maximum_score", name="score_range"),
+        CheckConstraint("maximum_score > 0", name="maximum_score_positive"),
+        CheckConstraint(
+            "is_fictional or retention_expires_at is not null",
+            name="personal_data_requires_retention",
+        ),
+        CheckConstraint(
+            "not (possible_match_person_id is not null and duplicate_person_id is not null)",
+            name="single_match_resolution",
+        ),
+        Index("ix_individual_candidates_run_created", "discovery_run_id", "created_at", "id"),
+        Index(
+            "ix_individual_candidates_workspace_name",
+            "workspace_id",
+            "normalized_name",
+        ),
+        Index("ix_individual_candidates_possible_match", "possible_match_person_id"),
+        Index("ix_individual_candidates_duplicate", "duplicate_person_id"),
+        {"schema": "scout"},
+    )
+
+
+class Suppression(Base):
+    __tablename__ = "suppressions"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    scope: Mapped[str] = mapped_column(String(24), nullable=False)
+    person_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.people.id", ondelete="RESTRICT")
+    )
+    normalized_value_hash: Mapped[str | None] = mapped_column(String(64))
+    reason_category: Mapped[str] = mapped_column(String(40), nullable=False)
+    source: Mapped[str] = mapped_column(String(40), nullable=False, default="operator")
+    effective_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("scope in ('person', 'profile')", name="scope_valid"),
+        CheckConstraint(
+            "reason_category in ('opt_out', 'privacy_request', 'operator_suppressed')",
+            name="reason_category_valid",
+        ),
+        CheckConstraint("source in ('operator', 'privacy_request')", name="source_valid"),
+        CheckConstraint(
+            "(scope = 'person' and person_id is not null and normalized_value_hash is null) or "
+            "(scope = 'profile' and person_id is null and normalized_value_hash is not null)",
+            name="target_matches_scope",
+        ),
+        CheckConstraint(
+            "expires_at is null or expires_at > effective_at",
+            name="expiry_after_effective",
+        ),
+        Index("ix_suppressions_person_id", "person_id"),
+        Index(
+            "uq_suppressions_active_person",
+            "workspace_id",
+            "person_id",
+            unique=True,
+            postgresql_where=text("revoked_at is null and person_id is not null"),
+        ),
+        Index(
+            "uq_suppressions_active_profile",
+            "workspace_id",
+            "normalized_value_hash",
+            unique=True,
+            postgresql_where=text("revoked_at is null and normalized_value_hash is not null"),
+        ),
+        {"schema": "scout"},
+    )
+
+
+class IndividualReviewDecision(Base):
+    __tablename__ = "individual_review_decisions"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    candidate_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.individual_discovery_candidates.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    action: Mapped[str] = mapped_column(String(24), nullable=False)
+    selected_person_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.people.id", ondelete="RESTRICT")
+    )
+    lead_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.leads.id", ondelete="RESTRICT")
+    )
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(24), nullable=False, default="operator")
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("candidate_id", name="uq_individual_review_decisions_candidate"),
+        CheckConstraint(
+            "action in ('promote_new', 'link_existing', 'reject', 'suppress')",
+            name="action_valid",
+        ),
+        CheckConstraint("actor_type = 'operator'", name="actor_type_valid"),
+        CheckConstraint(
+            "(action in ('promote_new', 'link_existing') and selected_person_id is not null) or "
+            "(action in ('reject', 'suppress') and selected_person_id is null)",
+            name="promotion_action_requires_person",
+        ),
+        CheckConstraint(
+            "(action in ('promote_new', 'link_existing') and lead_id is not null) or "
+            "(action in ('reject', 'suppress') and lead_id is null)",
+            name="promotion_action_requires_lead",
+        ),
+        Index("ix_individual_review_decisions_workspace_decided", "workspace_id", "decided_at"),
+        Index("ix_individual_review_decisions_selected_person", "selected_person_id"),
+        Index("ix_individual_review_decisions_lead", "lead_id"),
         {"schema": "scout"},
     )
 

@@ -9,9 +9,9 @@ from uuid import UUID, uuid4
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
+from revvix_scout.application.usage import reserve_provider_budget, settle_provider_usage
 from revvix_scout.config import Settings
 from revvix_scout.db.models import (
-    BudgetPolicy,
     BudgetReservation,
     CompanyDomain,
     DiscoveryCandidate,
@@ -20,7 +20,6 @@ from revvix_scout.db.models import (
     Job,
     JobAttempt,
     ProviderConfig,
-    ProviderUsageEvent,
 )
 from revvix_scout.domain.normalization import normalize_domain
 from revvix_scout.providers.contracts import (
@@ -37,10 +36,6 @@ class DiscoveryError(RuntimeError):
 
 
 class ProviderDisabledError(DiscoveryError):
-    pass
-
-
-class BudgetExceededError(DiscoveryError):
     pass
 
 
@@ -139,6 +134,7 @@ def enqueue_discovery(
         job_id=job.id,
         icp_version_id=settings.default_icp_version_id,
         provider_key=provider_key,
+        pipeline_kind="business",
         request_fingerprint=fingerprint,
         request_json=request_json,
         status="queued",
@@ -166,6 +162,7 @@ def process_discovery_run(
         .where(
             DiscoveryRun.id == run_id,
             DiscoveryRun.workspace_id == settings.default_workspace_id,
+            DiscoveryRun.pipeline_kind == "business",
             or_(
                 and_(Job.status == "queued", Job.next_attempt_at <= claimed_at),
                 and_(Job.status == "running", Job.lease_expires_at < claimed_at),
@@ -212,11 +209,12 @@ def process_discovery_run(
         return run
 
     estimated_units = provider.estimate_units(query)
-    reservation = _reserve_budget(
+    reservation = reserve_provider_budget(
         session=session,
         settings=settings,
         run=run,
         provider_key=run.provider_key,
+        operation="business_discovery",
         estimated_units=estimated_units,
         now=claimed_at,
     )
@@ -333,6 +331,7 @@ def process_next_discovery_run(
         .join(Job, Job.id == DiscoveryRun.job_id)
         .where(
             DiscoveryRun.workspace_id == settings.default_workspace_id,
+            DiscoveryRun.pipeline_kind == "business",
             or_(
                 and_(Job.status == "queued", Job.next_attempt_at <= claimed_at),
                 and_(Job.status == "running", Job.lease_expires_at < claimed_at),
@@ -503,11 +502,12 @@ def _complete_success(
     job.lease_expires_at = None
     attempt.status = "succeeded"
     attempt.completed_at = now
-    _settle(
+    settle_provider_usage(
         session=session,
         settings=settings,
         run=run,
         reservation=reservation,
+        operation="business_discovery",
         actual_units=page.actual_units,
         outcome="succeeded",
         now=now,
@@ -539,11 +539,12 @@ def _complete_failure(
     job.lease_expires_at = None
     job.error_code = run.error_code = category
     job.error_message = run.error_message = str(error)[:500]
-    _settle(
+    settle_provider_usage(
         session=session,
         settings=settings,
         run=run,
         reservation=reservation,
+        operation="business_discovery",
         actual_units=provider_error.actual_units if provider_error is not None else actual_units,
         outcome=(
             "failed"
@@ -564,87 +565,6 @@ def _complete_failure(
             job.error_message = run.error_message = (
                 f"Maximum discovery attempts exhausted; last category: {category}."
             )
-
-
-def _reserve_budget(
-    *,
-    session: Session,
-    settings: Settings,
-    run: DiscoveryRun,
-    provider_key: str,
-    estimated_units: int,
-    now: datetime,
-) -> BudgetReservation:
-    policy = session.scalar(
-        select(BudgetPolicy)
-        .where(
-            BudgetPolicy.workspace_id == settings.default_workspace_id,
-            BudgetPolicy.provider_key == provider_key,
-            BudgetPolicy.operation == "business_discovery",
-            BudgetPolicy.window_kind == "run",
-            BudgetPolicy.enabled.is_(True),
-        )
-        .with_for_update()
-    )
-    if policy is None:
-        raise BudgetExceededError("No enabled budget policy; default deny")
-    active_units = session.scalar(
-        select(func.coalesce(func.sum(BudgetReservation.reserved_units), 0)).where(
-            BudgetReservation.discovery_run_id == run.id,
-            BudgetReservation.status == "active",
-        )
-    )
-    settled_units = session.scalar(
-        select(func.coalesce(func.sum(ProviderUsageEvent.actual_units), 0)).where(
-            ProviderUsageEvent.discovery_run_id == run.id
-        )
-    )
-    if int(active_units or 0) + int(settled_units or 0) + estimated_units > policy.hard_limit_units:
-        raise BudgetExceededError("Provider call would exceed the hard run budget")
-    reservation = BudgetReservation(
-        id=uuid4(),
-        workspace_id=settings.default_workspace_id,
-        discovery_run_id=run.id,
-        provider_key=provider_key,
-        operation="business_discovery",
-        reserved_units=estimated_units,
-        status="active",
-        reserved_at=now,
-        expires_at=now + timedelta(minutes=5),
-    )
-    session.add(reservation)
-    session.flush()
-    return reservation
-
-
-def _settle(
-    *,
-    session: Session,
-    settings: Settings,
-    run: DiscoveryRun,
-    reservation: BudgetReservation,
-    actual_units: int,
-    outcome: str,
-    now: datetime,
-) -> None:
-    reservation.status = "settled"
-    reservation.settled_units = actual_units
-    reservation.settled_at = now
-    session.add(
-        ProviderUsageEvent(
-            workspace_id=settings.default_workspace_id,
-            discovery_run_id=run.id,
-            reservation_id=reservation.id,
-            provider_key=run.provider_key,
-            operation="business_discovery",
-            outcome=outcome,
-            estimated_units=reservation.reserved_units,
-            actual_units=actual_units,
-            unit_type="request",
-            billable=False,
-            occurred_at=now,
-        )
-    )
 
 
 def _query_to_json(query: DiscoveryQuery) -> dict[str, Any]:

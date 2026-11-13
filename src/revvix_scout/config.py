@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     default_workspace_id: UUID = Field(default=UUID("00000000-0000-4000-8000-000000000001"))
     default_icp_id: UUID = Field(default=UUID("00000000-0000-4000-8000-000000000101"))
     default_icp_version_id: UUID = Field(default=UUID("00000000-0000-4000-8000-000000000102"))
+    individual_icp_id: UUID = Field(default=UUID("00000000-0000-4000-8000-000000000201"))
+    individual_icp_version_id: UUID = Field(default=UUID("00000000-0000-4000-8000-000000000202"))
     max_import_bytes: int = 2_000_000
     max_import_rows: int = 5_000
     worker_poll_seconds: float = Field(default=1.0, ge=0.1, le=60.0)

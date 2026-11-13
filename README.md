@@ -2,7 +2,7 @@
 
 Revvix Scout is a free-first lead intelligence platform for discovering, researching, enriching, and qualifying potential customers for Revvix AI. It is designed around two independent prospect pipelines—individual professionals and businesses—backed by shared evidence, entity resolution, qualification, budget control, and reporting capabilities.
 
-> Status: M3 is complete for the approved provider-free scope: discovery adapters, resumable jobs, bounded budgets, and the local background worker are implemented and acceptance-tested. It runs locally with fictional or operator-supplied business data and makes no live provider, LLM, outreach, paid-credit, hosted-Supabase, or cloud calls.
+> Status: M3 and the approved fictional-only M4 scope are complete. Individual discovery, human review, person-subject leads, and suppression are implemented and acceptance-tested against isolated local PostgreSQL. No live personal data, provider, LLM, outreach, paid-credit, hosted-Supabase, or cloud call is enabled.
 
 ## Product principles
 
@@ -26,6 +26,7 @@ Revvix Scout is a free-first lead intelligence platform for discovering, researc
 - [Compliance and retention](docs/COMPLIANCE_AND_RETENTION.md)
 - [M3 discovery contract](docs/DISCOVERY_M3.md)
 - [Discovery CSV v1 contract](docs/DISCOVERY_CSV_V1.md)
+- [M4 fictional individual discovery contract](docs/INDIVIDUAL_DISCOVERY_M4.md)
 - [Repository instructions](AGENTS.md)
 
 ## Implemented M2A workflow
@@ -96,6 +97,14 @@ curl -X POST http://127.0.0.1:8000/v1/discovery-runs \
   -d '{"provider_key":"fictional_accounting_directory","search_text":"independent accounting firms","country_code":"GB","region":"England","limit":25,"idempotency_key":"local-discovery-001"}'
 ```
 
+With the M4 migration applied to an isolated database, run fictional individual discovery with:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/individual-discovery-runs \
+  -H 'content-type: application/json' \
+  -d '{"provider_key":"fictional_professional_directory","search_text":"fictional consultants","country_code":"GB","region":"England","limit":25,"idempotency_key":"local-individual-discovery-001"}'
+```
+
 Import validated discovery candidates without a provider call with:
 
 ```bash
@@ -150,4 +159,4 @@ revvix-scout/
 
 ## Scope boundary
 
-M3 uses one deterministic development workspace and the approved configurable England accounting-firm ICP. Authentication/RLS membership policies remain an M2 dependency before any client or hosted use. M3 includes fictional, manual, and CSV adapters plus resumable local job claims and a separate worker process; it does not include live collection, people/contact data, fuzzy merging, LLM analysis, recurring scheduling, a frontend, deployment, or outreach. No paid service, hosted infrastructure, production migration, deployment, or external message is authorized.
+M3 uses one deterministic development workspace and the approved configurable England accounting-firm ICP. M4 adds a separate fictional-only individual candidate path with no contact fields or live collection. Authentication/RLS membership policies remain an M2 dependency before any client or hosted use. The system does not include live people/contact collection, fuzzy auto-merging, LLM analysis, recurring scheduling, a frontend, deployment, or outreach. No paid service, hosted infrastructure, production migration, deployment, or external message is authorized.

@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import AnyHttpUrl, AwareDatetime, BaseModel, Field, field_validator
+from pydantic import AnyHttpUrl, AwareDatetime, BaseModel, Field, field_validator, model_validator
 
 Industry = Literal[
     "accounting",
@@ -217,3 +217,109 @@ class DiscoveryRunView(BaseModel):
     max_attempts: int
     next_attempt_at: datetime | None
     candidates: list[DiscoveryCandidateView] = Field(default_factory=list)
+
+
+class IndividualDiscoveryRunRequest(BaseModel):
+    """Fictional-only M4 discovery request; no contact fields are accepted."""
+
+    provider_key: str = "fictional_professional_directory"
+    search_text: Annotated[str, Field(min_length=1, max_length=300)] = "fictional consultants"
+    country_code: Annotated[str, Field(min_length=2, max_length=2)] = "GB"
+    region: Annotated[str, Field(min_length=1, max_length=120)] = "England"
+    limit: Annotated[int, Field(ge=1, le=100)] = 25
+    cursor: Annotated[str | None, Field(max_length=500)] = None
+    idempotency_key: Annotated[str, Field(min_length=8, max_length=160)]
+
+    @field_validator("country_code")
+    @classmethod
+    def normalize_individual_country(cls, value: str) -> str:
+        return value.upper()
+
+
+class IndividualCandidateView(BaseModel):
+    id: UUID
+    provider_record_id: str
+    display_name: str
+    professional_profile_url: str
+    normalized_profile_url: str
+    persona: str | None
+    country_code: str | None
+    region: str | None
+    service_summary: str | None
+    has_professional_presence: bool
+    has_business_relevance: bool
+    is_fictional: bool
+    source_url: str
+    observed_at: datetime
+    status: str
+    disposition: str
+    score: int
+    maximum_score: int
+    rejection_reason: str | None
+    possible_match_person_id: UUID | None
+    duplicate_person_id: UUID | None
+    evidence_classification: str
+
+
+class IndividualDiscoveryRunView(BaseModel):
+    id: UUID
+    provider_key: str
+    status: str
+    next_cursor: str | None
+    discovered_count: int
+    duplicate_count: int
+    rejected_count: int
+    error_code: str | None
+    error_message: str | None
+    attempt_count: int
+    max_attempts: int
+    candidates: list[IndividualCandidateView] = Field(default_factory=list)
+
+
+class IndividualReviewRequest(BaseModel):
+    action: Literal["promote_new", "link_existing", "reject", "suppress"]
+    person_id: UUID | None = None
+    reason: Annotated[str, Field(min_length=3, max_length=500)]
+
+    @model_validator(mode="after")
+    def validate_action_target(self) -> "IndividualReviewRequest":
+        if self.action == "link_existing" and self.person_id is None:
+            raise ValueError("person_id is required when linking an existing person")
+        if self.action != "link_existing" and self.person_id is not None:
+            raise ValueError("person_id is only allowed when linking an existing person")
+        return self
+
+
+class IndividualLeadView(BaseModel):
+    id: UUID
+    person_id: UUID
+    display_name: str
+    normalized_profile_url: str
+    stage: str
+    disposition: str
+    person_status: str
+    is_fictional: bool
+    created_at: datetime
+
+
+class IndividualLeadPage(BaseModel):
+    items: list[IndividualLeadView]
+
+
+class IndividualReviewResult(BaseModel):
+    candidate_id: UUID
+    action: str
+    candidate_status: str
+    rejection_reason: str | None
+    lead: IndividualLeadView | None
+
+
+class PersonSuppressionRequest(BaseModel):
+    reason_category: Literal["opt_out", "privacy_request", "operator_suppressed"]
+
+
+class PersonSuppressionView(BaseModel):
+    person_id: UUID
+    status: str
+    reason_category: str
+    effective_at: datetime

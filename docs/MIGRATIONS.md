@@ -4,6 +4,10 @@ Scout uses Alembic migrations against the PostgreSQL instance started by the loc
 
 Revision `94bf120ac780` is additive. Existing jobs are backfilled to three attempts and an immediately eligible `next_attempt_at` before temporary server defaults are removed. Its downgrade removes retry metadata and indexes and is destructive to in-flight retry state; prefer a forward correction outside a disposable database.
 
+Revision `410360f37f0b` is the M4 foundation migration. It adds three fictional-individual tables and a required `discovery_runs.pipeline_kind`. Existing runs are backfilled as `business` through a temporary server default, then the default is removed. The new tables have RLS enabled with no policies. Its downgrade destroys all M4 people/profile/candidate records and removes the discriminator; use it only on a disposable database and prefer a forward correction elsewhere.
+
+Revision `20a7a62a7d6a` is the M4 completion migration. It adds suppressions and immutable individual review decisions, enables RLS on both, and extends `leads` to require exactly one company or person subject matching `pipeline_kind`. Existing business rows remain valid and receive no data rewrite. Its downgrade explicitly deletes all individual leads before restoring the business-only constraint, so it is destructive and suitable only for an isolated disposable database.
+
 ## Apply and inspect
 
 Set `SCOUT_DATABASE_URL` to the intended database, then run:
@@ -25,7 +29,7 @@ alembic downgrade base
 alembic upgrade head
 ```
 
-The migration chain through revision `94bf120ac780` was applied from base and verified against an isolated local database on 2026-11-13. Alembic reported no schema drift, all 22 application tables retained RLS, the private schema had no `PUBLIC` grants, and all indexes were valid. The destructive downgrade was not rerun. Do not use downgrade to recover shared or production data.
+The migration chain through revision `20a7a62a7d6a` was applied and verified against an isolated local database on 2026-11-13. Alembic reported no schema drift, all 27 application tables retained RLS, the private schema had no `PUBLIC` grants, all indexes were valid, and every foreign key touched by M4 had a supporting index. The full suite passed 63 tests. The destructive downgrade was not rerun. Do not use downgrade to recover shared or production data.
 
 ## Recovery strategy
 
@@ -37,4 +41,4 @@ The migration chain through revision `94bf120ac780` was applied from base and ve
 
 ## RLS review
 
-RLS is enabled with no policies on all 22 application tables. Non-owner roles therefore have no row access, and the schema has no `PUBLIC` access. The direct backend connection operates as the table owner for local development. M2 must introduce workspace membership, explicit grants, policy tests for every role/action, and a non-owner application role before any browser or Data API exposure.
+RLS is enabled with no policies on all 27 application tables. Non-owner roles therefore have no row access, and the schema has no `PUBLIC` access. The direct backend connection operates as the table owner for local development. M2 must introduce workspace membership, explicit grants, policy tests for every role/action, and a non-owner application role before any browser or Data API exposure.

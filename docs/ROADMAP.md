@@ -87,6 +87,8 @@ This is the smallest functional milestone worth implementing. It validates the c
 
 ## M4 — Individual prospect discovery pipeline
 
+**Implementation status:** Complete on 2026-11-13 for the approved fictional-only scope. Domain rules, typed adapter contract, fixture adapter, isolated discovery API, person promotion, explicit duplicate decisions, person-subject leads, hashed profile/person suppression, and acceptance tests are implemented. Revisions `410360f37f0b` and `20a7a62a7d6a` are applied to the isolated test database. The full 63-test suite passes with no schema drift. Live personal-data collection remains blocked on the dependency approvals below.
+
 **Outcome:** Operators can discover and qualify public professional-business candidates independently of organizations.
 
 **Dependencies:** M3; approved target personas/sources and privacy basis.
