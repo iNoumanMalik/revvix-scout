@@ -173,9 +173,11 @@ Versioned waterfall configuration per pipeline/ICP: provider operation, order, e
 
 ### `jobs`
 
-`workspace_id`, type, subject references, status, priority, payload reference, idempotency key, input fingerprint, scheduled time, lease owner/expiry, attempt count/max, parent job, created/updated/completed times. Unique `(workspace_id, job_type, idempotency_key)`.
+`workspace_id`, type, status, safe input JSON, idempotency key, next-attempt time, lease owner/expiry, maximum attempts, errors, and created/updated/completed times. Unique `(workspace_id, job_type, idempotency_key)`. M3 uses a partial `(next_attempt_at, created_at)` index for queued claims.
 
 ### `job_attempts`
+
+One immutable result per numbered execution attempt: status, retryable flag, stable error category/message, and start/completion times. Unique `(job_id, attempt_number)`.
 
 Immutable attempt number, worker ID, started/ended times, outcome, normalized error class/code, retry decision, next retry, safe diagnostic metadata. Raw secrets and personal payloads are forbidden.
 

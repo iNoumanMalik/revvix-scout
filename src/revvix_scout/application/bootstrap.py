@@ -50,47 +50,56 @@ def bootstrap_defaults(session: Session, settings: Settings) -> None:
                 published_at=datetime.now(UTC),
             )
         )
-    provider = (
-        session.query(ProviderConfig)
-        .filter_by(
-            workspace_id=settings.default_workspace_id,
-            provider_key="fictional_accounting_directory",
-        )
-        .one_or_none()
+    providers = (
+        ("fictional_accounting_directory", "fixture", 1, True),
+        ("manual_input", "manual", 0, False),
+        ("csv_input", "csv", 0, False),
     )
-    if provider is None:
-        session.add(
-            ProviderConfig(
+    for provider_key, adapter_kind, hard_limit, fictional_only in providers:
+        provider = (
+            session.query(ProviderConfig)
+            .filter_by(
                 workspace_id=settings.default_workspace_id,
-                provider_key="fictional_accounting_directory",
-                adapter_kind="fixture",
-                enabled=True,
-                live_calls_allowed=False,
-                terms_review_status="approved",
-                config_json={"fictional_data_only": True},
-                data_policy_json={"retention_days": 14, "contains_personal_data": False},
+                provider_key=provider_key,
             )
+            .one_or_none()
         )
+        if provider is None:
+            session.add(
+                ProviderConfig(
+                    workspace_id=settings.default_workspace_id,
+                    provider_key=provider_key,
+                    adapter_kind=adapter_kind,
+                    enabled=True,
+                    live_calls_allowed=False,
+                    terms_review_status="approved",
+                    config_json={"fictional_data_only": fictional_only},
+                    data_policy_json={
+                        "retention_days": 14,
+                        "contains_personal_data": False,
+                    },
+                )
+            )
 
-    policy = (
-        session.query(BudgetPolicy)
-        .filter_by(
-            workspace_id=settings.default_workspace_id,
-            provider_key="fictional_accounting_directory",
-            operation="business_discovery",
-            window_kind="run",
-        )
-        .one_or_none()
-    )
-    if policy is None:
-        session.add(
-            BudgetPolicy(
+        policy = (
+            session.query(BudgetPolicy)
+            .filter_by(
                 workspace_id=settings.default_workspace_id,
-                provider_key="fictional_accounting_directory",
+                provider_key=provider_key,
                 operation="business_discovery",
                 window_kind="run",
-                hard_limit_units=1,
-                enabled=True,
             )
+            .one_or_none()
         )
+        if policy is None:
+            session.add(
+                BudgetPolicy(
+                    workspace_id=settings.default_workspace_id,
+                    provider_key=provider_key,
+                    operation="business_discovery",
+                    window_kind="run",
+                    hard_limit_units=hard_limit,
+                    enabled=True,
+                )
+            )
     session.commit()

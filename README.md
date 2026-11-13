@@ -2,7 +2,7 @@
 
 Revvix Scout is a free-first lead intelligence platform for discovering, researching, enriching, and qualifying potential customers for Revvix AI. It is designed around two independent prospect pipelines—individual professionals and businesses—backed by shared evidence, entity resolution, qualification, budget control, and reporting capabilities.
 
-> Status: M3 provider-free discovery core implemented. It runs locally with fictional data and makes no live provider, LLM, outreach, paid-credit, hosted-Supabase, or cloud calls.
+> Status: M3 is complete for the approved provider-free scope: discovery adapters, resumable jobs, bounded budgets, and the local background worker are implemented and acceptance-tested. It runs locally with fictional or operator-supplied business data and makes no live provider, LLM, outreach, paid-credit, hosted-Supabase, or cloud calls.
 
 ## Product principles
 
@@ -25,6 +25,7 @@ Revvix Scout is a free-first lead intelligence platform for discovering, researc
 - [Approved MVP decisions](docs/APPROVED_MVP_DECISIONS.md)
 - [Compliance and retention](docs/COMPLIANCE_AND_RETENTION.md)
 - [M3 discovery contract](docs/DISCOVERY_M3.md)
+- [Discovery CSV v1 contract](docs/DISCOVERY_CSV_V1.md)
 - [Repository instructions](AGENTS.md)
 
 ## Implemented M2A workflow
@@ -72,6 +73,14 @@ Run the API:
 .venv/bin/uvicorn revvix_scout.main:app --host 127.0.0.1 --port 8000
 ```
 
+Run the separate local discovery worker after the database is migrated:
+
+```bash
+.venv/bin/revvix-scout-worker
+```
+
+The worker drains at most 25 due jobs per cycle and waits one second when the queue is not full. Override those bounded settings with `SCOUT_WORKER_BATCH_SIZE` and `SCOUT_WORKER_POLL_SECONDS`. `SIGINT` and `SIGTERM` stop it gracefully after the current adapter operation settles.
+
 OpenAPI documentation is available at `http://127.0.0.1:8000/docs`. Import a fixture with:
 
 ```bash
@@ -85,6 +94,14 @@ Run a fictional discovery page with:
 curl -X POST http://127.0.0.1:8000/v1/discovery-runs \
   -H 'content-type: application/json' \
   -d '{"provider_key":"fictional_accounting_directory","search_text":"independent accounting firms","country_code":"GB","region":"England","limit":25,"idempotency_key":"local-discovery-001"}'
+```
+
+Import validated discovery candidates without a provider call with:
+
+```bash
+curl -F 'file=@tests/fixtures/discovery_candidates_v1.csv;type=text/csv' \
+  -F 'idempotency_key=local-csv-discovery-001' \
+  http://127.0.0.1:8000/v1/discovery-runs/csv
 ```
 
 For tests, create a separate database. Integration tests truncate data in the configured database and must never target a shared or production database.
@@ -133,4 +150,4 @@ revvix-scout/
 
 ## Scope boundary
 
-M3 uses one deterministic development workspace and the approved configurable England accounting-firm ICP. Authentication/RLS membership policies remain an M2 dependency before any client or hosted use. M3 includes only a fictional provider adapter; it does not include live collection, people/contact data, fuzzy merging, LLM analysis, scheduling, a frontend, deployment, or outreach. No paid service, hosted infrastructure, production migration, deployment, or external message is authorized.
+M3 uses one deterministic development workspace and the approved configurable England accounting-firm ICP. Authentication/RLS membership policies remain an M2 dependency before any client or hosted use. M3 includes fictional, manual, and CSV adapters plus resumable local job claims and a separate worker process; it does not include live collection, people/contact data, fuzzy merging, LLM analysis, recurring scheduling, a frontend, deployment, or outreach. No paid service, hosted infrastructure, production migration, deployment, or external message is authorized.

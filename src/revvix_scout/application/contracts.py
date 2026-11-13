@@ -160,6 +160,32 @@ class DiscoveryRunRequest(BaseModel):
     idempotency_key: Annotated[str, Field(min_length=8, max_length=160)]
 
 
+class ManualDiscoveryRecord(BaseModel):
+    provider_record_id: Annotated[str, Field(min_length=1, max_length=160)]
+    company_name: Annotated[str, Field(min_length=1, max_length=240)]
+    domain: Annotated[str | None, Field(max_length=500)] = None
+    country_code: Annotated[str | None, Field(min_length=2, max_length=2)] = None
+    region: Annotated[str | None, Field(max_length=120)] = None
+    industry: Annotated[str | None, Field(max_length=80)] = None
+    employee_count: Annotated[int | None, Field(ge=0, le=1_000_000)] = None
+    legal_form: Annotated[str | None, Field(max_length=80)] = None
+    company_status: Annotated[str | None, Field(max_length=40)] = None
+    source_url: AnyHttpUrl
+    observed_at: AwareDatetime
+
+    @field_validator("country_code")
+    @classmethod
+    def normalize_manual_country(cls, value: str | None) -> str | None:
+        return value.upper() if value is not None else None
+
+
+class ManualDiscoveryRequest(BaseModel):
+    records: Annotated[list[ManualDiscoveryRecord], Field(min_length=1, max_length=5_000)]
+    limit: Annotated[int, Field(ge=1, le=100)] = 25
+    cursor: Annotated[str | None, Field(max_length=500)] = None
+    idempotency_key: Annotated[str, Field(min_length=8, max_length=160)]
+
+
 class DiscoveryCandidateView(BaseModel):
     id: UUID
     provider_record_id: str
@@ -187,4 +213,7 @@ class DiscoveryRunView(BaseModel):
     rejected_count: int
     error_code: str | None
     error_message: str | None
+    attempt_count: int
+    max_attempts: int
+    next_attempt_at: datetime | None
     candidates: list[DiscoveryCandidateView] = Field(default_factory=list)

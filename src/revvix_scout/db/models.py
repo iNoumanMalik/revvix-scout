@@ -475,6 +475,12 @@ class Job(Base, TimestampMixin):
     idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued")
     input_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    worker_id: Mapped[str | None] = mapped_column(String(120))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_code: Mapped[str | None] = mapped_column(String(80))
@@ -485,6 +491,13 @@ class Job(Base, TimestampMixin):
         CheckConstraint(
             "status in ('queued', 'running', 'succeeded', 'partially_succeeded', 'failed')",
             name="status_valid",
+        ),
+        CheckConstraint("max_attempts > 0 and max_attempts <= 10", name="max_attempts_valid"),
+        Index(
+            "ix_jobs_claimable",
+            "next_attempt_at",
+            "created_at",
+            postgresql_where=text("status = 'queued'"),
         ),
         {"schema": "scout"},
     )
@@ -503,6 +516,7 @@ class JobAttempt(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_category: Mapped[str | None] = mapped_column(String(40))
     error_message: Mapped[str | None] = mapped_column(Text)
+    retryable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     __table_args__ = (
         UniqueConstraint("job_id", "attempt_number"),
@@ -541,6 +555,7 @@ class DiscoveryRun(Base, TimestampMixin):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
+        UniqueConstraint("job_id"),
         UniqueConstraint("workspace_id", "request_fingerprint"),
         CheckConstraint(
             "status in ('queued', 'running', 'succeeded', 'partially_succeeded', 'failed')",
@@ -623,6 +638,11 @@ class BudgetReservation(Base):
             "settled_units is null or settled_units >= 0", name="settled_units_nonnegative"
         ),
         CheckConstraint("status in ('active', 'settled', 'released')", name="status_valid"),
+        Index(
+            "ix_budget_reservations_run_status",
+            "discovery_run_id",
+            "status",
+        ),
         {"schema": "scout"},
     )
 
@@ -656,5 +676,6 @@ class ProviderUsageEvent(Base):
     __table_args__ = (
         CheckConstraint("estimated_units >= 0 and actual_units >= 0", name="units_nonnegative"),
         CheckConstraint("outcome in ('succeeded', 'failed', 'partial')", name="outcome_valid"),
+        Index("ix_provider_usage_events_run_occurred", "discovery_run_id", "occurred_at"),
         {"schema": "scout"},
     )

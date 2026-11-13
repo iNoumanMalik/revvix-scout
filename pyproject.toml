@@ -33,6 +33,7 @@ dev = [
 
 [project.scripts]
 revvix-scout = "revvix_scout.main:run"
+revvix-scout-worker = "revvix_scout.worker:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/revvix_scout"]

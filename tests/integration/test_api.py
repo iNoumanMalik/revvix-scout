@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "businesses_v1.csv"
+DISCOVERY_FIXTURE = Path(__file__).parents[1] / "fixtures" / "discovery_candidates_v1.csv"
 
 
 def _import_fixture(client: TestClient) -> dict[str, object]:
@@ -204,3 +205,100 @@ def test_discovery_deduplicates_existing_domain_before_enrichment(client: TestCl
     duplicate = next(item for item in payload["candidates"] if item["status"] == "duplicate")
     assert duplicate["normalized_domain"] == "example.com"
     assert duplicate["rejection_reason"] == "existing_domain"
+
+
+def test_manual_discovery_records_operator_provenance_and_zero_usage(client: TestClient) -> None:
+    response = client.post(
+        "/v1/discovery-runs/manual",
+        json={
+            "idempotency_key": "manual-discovery-001",
+            "records": [
+                {
+                    "provider_record_id": "manual-001",
+                    "company_name": "Fictional Operator Accountants",
+                    "domain": "operator-accountants.example.com",
+                    "country_code": "gb",
+                    "region": "England",
+                    "industry": "accounting",
+                    "employee_count": 18,
+                    "legal_form": "Ltd",
+                    "company_status": "active",
+                    "source_url": "https://operator-accountants.invalid/about",
+                    "observed_at": "2026-11-01T10:00:00Z",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] == "succeeded"
+    assert payload["attempt_count"] == 1
+    assert payload["candidates"][0]["country_code"] == "GB"
+
+    engine = create_engine(os.environ["SCOUT_DATABASE_URL"])
+    with engine.connect() as connection:
+        provenance = connection.scalar(
+            text(
+                "select provenance_json from scout.discovery_candidates "
+                "where discovery_run_id = :run_id"
+            ),
+            {"run_id": payload["id"]},
+        )
+        usage = connection.scalar(
+            text(
+                "select actual_units from scout.provider_usage_events "
+                "where discovery_run_id = :run_id"
+            ),
+            {"run_id": payload["id"]},
+        )
+    engine.dispose()
+    assert provenance == {
+        "classification": "operator_supplied",
+        "adapter_kind": "manual",
+        "fixture": False,
+    }
+    assert usage == 0
+
+
+def test_discovery_csv_uses_strict_contract_and_does_not_store_raw_file(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/v1/discovery-runs/csv",
+        data={"idempotency_key": "csv-discovery-001", "limit": "25"},
+        files={
+            "file": (
+                "discovery.csv",
+                DISCOVERY_FIXTURE.read_bytes(),
+                "text/csv",
+            )
+        },
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["provider_key"] == "csv_input"
+    assert payload["discovered_count"] == 2
+    assert payload["rejected_count"] == 1
+
+    engine = create_engine(os.environ["SCOUT_DATABASE_URL"])
+    with engine.connect() as connection:
+        stored_request = connection.scalar(
+            text("select request_json from scout.discovery_runs where id = :run_id"),
+            {"run_id": payload["id"]},
+        )
+    engine.dispose()
+    assert "records" in stored_request
+    assert "raw_csv" not in stored_request
+    assert set(stored_request["records"][0]) == {
+        "provider_record_id",
+        "company_name",
+        "domain",
+        "country_code",
+        "region",
+        "industry",
+        "employee_count",
+        "legal_form",
+        "company_status",
+        "source_url",
+        "observed_at",
+    }

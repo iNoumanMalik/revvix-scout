@@ -12,6 +12,7 @@ class DiscoveryQuery:
     region: str = "England"
     limit: int = 25
     cursor: str | None = None
+    seed_records: tuple["DiscoveredBusiness", ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,7 +70,15 @@ class ProviderNotRegisteredError(LookupError):
 class ProviderExecutionError(RuntimeError):
     """Stable provider failure with retry classification."""
 
-    def __init__(self, category: str, message: str, *, retryable: bool) -> None:
+    def __init__(
+        self,
+        category: str,
+        message: str,
+        *,
+        retryable: bool,
+        actual_units: int = 0,
+    ) -> None:
         super().__init__(message)
         self.category = category
         self.retryable = retryable
+        self.actual_units = actual_units

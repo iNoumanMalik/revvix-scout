@@ -1,6 +1,8 @@
 # Migration and recovery notes
 
-Scout uses Alembic migrations against the PostgreSQL instance started by the local Supabase CLI. Application objects live in the private `scout` schema; Alembic's own version table lives in the private `scout_internal` schema rather than exposed `public`. The M3 migration adds provider discovery, job, budget, and usage tables. Every application table has RLS enabled. No migration creates Supabase Auth policies, browser/Data API grants, or hosted resources.
+Scout uses Alembic migrations against the PostgreSQL instance started by the local Supabase CLI. Application objects live in the private `scout` schema; Alembic's own version table lives in the private `scout_internal` schema rather than exposed `public`. The initial M3 migration adds provider discovery, job, budget, and usage tables. Revision `94bf120ac780` adds worker leases, retry scheduling, attempt retryability, one-run-per-job enforcement, and claim/settlement indexes. Every application table has RLS enabled. No migration creates Supabase Auth policies, browser/Data API grants, or hosted resources.
+
+Revision `94bf120ac780` is additive. Existing jobs are backfilled to three attempts and an immediately eligible `next_attempt_at` before temporary server defaults are removed. Its downgrade removes retry metadata and indexes and is destructive to in-flight retry state; prefer a forward correction outside a disposable database.
 
 ## Apply and inspect
 
@@ -23,7 +25,7 @@ alembic downgrade base
 alembic upgrade head
 ```
 
-This downgrade/rebuild path was verified against an isolated local database. Do not use it to recover shared or production data.
+The migration chain through revision `94bf120ac780` was applied from base and verified against an isolated local database on 2026-11-13. Alembic reported no schema drift, all 22 application tables retained RLS, the private schema had no `PUBLIC` grants, and all indexes were valid. The destructive downgrade was not rerun. Do not use downgrade to recover shared or production data.
 
 ## Recovery strategy
 

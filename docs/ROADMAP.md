@@ -73,7 +73,7 @@ This is the smallest functional milestone worth implementing. It validates the c
 
 ## M3 — Provider interfaces and free-first discovery engine
 
-**Implementation status:** Provider-free core complete on 2026-11-13. Live adapters and resumable background workers remain gated.
+**Implementation status:** Complete for the approved provider-free scope on 2026-11-13. The core, manual/CSV adapters, resumable job claims, separate local worker, and the full acceptance matrix—including budget races, permanent/transient failures, retry exhaustion, and lease recovery—are validated against isolated local PostgreSQL. Recurring schedules, operational deployment, and live adapters remain later gated work rather than M3 blockers.
 
 **Outcome:** Bounded discovery runs work through adapters without binding core logic to a vendor.
 

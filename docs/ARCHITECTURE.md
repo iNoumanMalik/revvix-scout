@@ -124,6 +124,8 @@ Mutation endpoints accept idempotency keys where repetition is plausible. Pagina
 
 Begin with a PostgreSQL-backed queue to avoid operating Redis before it is needed. Workers claim rows with short leases and `FOR UPDATE SKIP LOCKED`, heartbeat long tasks, and write immutable attempts. A unique idempotency key prevents duplicate logical jobs.
 
+The implemented local worker is a separate process from the API but uses the same application package and provider registry. It drains a configurable bounded batch, creates one short-lived session per job, releases its database connection while idle, and uses interruptible polling for graceful shutdown. It does not schedule recurring work or enable live adapters.
+
 Suggested states are `queued`, `leased`, `running`, `succeeded`, `partially_succeeded`, `retry_scheduled`, `failed`, and `cancelled`. A stale lease is recoverable. Backoff is bounded and jittered. Parent workflows aggregate child outcomes but never hide partial failure.
 
 n8n can call an authenticated scheduling endpoint or respond to job-completion webhooks later. It should not contain scoring rules, provider credentials that belong to Scout, or canonical lead state.

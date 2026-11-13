@@ -1,0 +1,3 @@
+schema_version,provider_record_id,company_name,domain,country_code,region,industry,employee_count,legal_form,company_status,source_url,observed_at
+1,csv-001,Fictional Ledger Partners,fictional-ledger.example.com,GB,England,accounting,14,Ltd,active,https://fictional-ledger.invalid/about,2026-11-01T10:00:00Z
+1,csv-002,Fictional Dormant Books,fictional-dormant.example.org,GB,England,bookkeeping,8,Ltd,dormant,https://fictional-dormant.invalid/about,2026-11-01T11:00:00Z
