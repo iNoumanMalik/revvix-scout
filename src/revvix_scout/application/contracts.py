@@ -403,6 +403,50 @@ class EnrichmentRunView(BaseModel):
     claims: list[EnrichmentClaimView]
 
 
+class OpportunityAnalysisRunRequest(BaseModel):
+    provider_key: str = "fictional_opportunity_analyzer"
+    idempotency_key: Annotated[str, Field(min_length=8, max_length=160)]
+
+
+class OpportunityHypothesisView(BaseModel):
+    id: UUID
+    category: str
+    title: str
+    summary: str
+    confidence: float
+    review_status: str
+    citation_claim_ids: list[UUID]
+    missing_fields: list[str]
+    contradictions: list[str]
+
+
+class OpportunityAnalysisRunView(BaseModel):
+    id: UUID
+    lead_id: UUID
+    provider_key: str
+    status: str
+    prompt_key: str
+    prompt_version: int
+    output_schema_version: int
+    taxonomy_version: int
+    model_name: str | None
+    model_version: str | None
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    injection_detected: bool
+    excluded_claim_ids: list[UUID]
+    missing_fields: list[str]
+    contradictions: list[str]
+    error_code: str | None
+    error_message: str | None
+    hypotheses: list[OpportunityHypothesisView]
+
+
+class OpportunityReviewRequest(BaseModel):
+    decision: Literal["accept", "reject"]
+    reason: Annotated[str, Field(min_length=8, max_length=500)]
+
+
 class EntityMatchRequest(BaseModel):
     entity_kind: Literal["company", "person"]
     left_id: UUID

@@ -1,11 +1,13 @@
 """Idempotent bootstrap of the approved M2A development workspace and ICP."""
 
+import hashlib
 from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
 from revvix_scout.config import Settings
 from revvix_scout.db.models import (
+    AiPromptDefinition,
     BudgetPolicy,
     EnrichmentPlan,
     EnrichmentStep,
@@ -15,6 +17,10 @@ from revvix_scout.db.models import (
     Workspace,
 )
 from revvix_scout.domain.individuals import development_individual_icp_definition
+from revvix_scout.domain.opportunities import (
+    OPPORTUNITY_CATEGORIES,
+    OPPORTUNITY_SYSTEM_INSTRUCTIONS,
+)
 from revvix_scout.domain.scoring import icp_definition
 
 
@@ -109,6 +115,13 @@ def bootstrap_defaults(session: Session, settings: Settings) -> None:
             1,
             True,
         ),
+        (
+            "fictional_opportunity_analyzer",
+            "fixture",
+            "opportunity_analysis",
+            1,
+            True,
+        ),
     )
     for provider_key, adapter_kind, operation, hard_limit, fictional_only in providers:
         provider = (
@@ -198,6 +211,32 @@ def bootstrap_defaults(session: Session, settings: Settings) -> None:
                 estimated_units=1,
                 stop_if_complete=True,
                 enabled=True,
+            )
+        )
+    prompt = (
+        session.query(AiPromptDefinition)
+        .filter_by(
+            workspace_id=settings.default_workspace_id,
+            prompt_key="opportunity-brief",
+            version=1,
+        )
+        .one_or_none()
+    )
+    if prompt is None:
+        session.add(
+            AiPromptDefinition(
+                workspace_id=settings.default_workspace_id,
+                prompt_key="opportunity-brief",
+                version=1,
+                status="published",
+                system_instructions=OPPORTUNITY_SYSTEM_INSTRUCTIONS,
+                output_schema_version=1,
+                taxonomy_version=1,
+                taxonomy_json={"categories": list(OPPORTUNITY_CATEGORIES)},
+                prompt_hash=hashlib.sha256(
+                    OPPORTUNITY_SYSTEM_INSTRUCTIONS.encode("utf-8")
+                ).hexdigest(),
+                published_at=datetime.now(UTC),
             )
         )
     session.commit()

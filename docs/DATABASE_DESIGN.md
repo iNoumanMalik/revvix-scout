@@ -1,9 +1,9 @@
 # Database design
 
-**Status:** Long-term logical design. M2A, M3, the approved fictional-only M4 and M5 schemas, and the approved provider-free M6 enrichment/evidence/entity-resolution scope are implemented locally.
+**Status:** Long-term logical design. M2A through the approved provider-free M7 scope are implemented locally.
 **Target:** PostgreSQL 15+ / Supabase PostgreSQL
 
-The implemented model contains the M2A qualification records plus M3 provider configuration, jobs/attempts, discovery runs/candidates, budget policies/reservations, and provider usage events. M4 revision `410360f37f0b` adds people, canonical public-profile identities, and individual discovery candidates. Completion revision `20a7a62a7d6a` adds append-only review decisions, minimal suppressions, and exactly-one-subject business/person leads. M5 revision `415f89420420` adds fictional decision-maker candidates, person-company roles, and a discovery-kind discriminator. M6 revision `9e83bb75d0e3` extends evidence freshness and supersession and adds versioned waterfalls plus review-first match/merge history; revision `c53cc7e9a80b` links shared reservation and usage ledgers to exactly one discovery or enrichment run. It lives in the non-exposed `scout` schema with RLS enabled and no browser/Data API grants. Authentication, membership policies, contacts, outreach, and other later entities remain planned.
+The implemented model contains the M2A qualification records plus M3 provider configuration, jobs/attempts, discovery runs/candidates, budget policies/reservations, and provider usage events. M4 revisions add people, public-profile identities, individual discovery, review, suppression, and person-subject leads. M5 adds fictional decision-maker candidates and person-company roles. M6 adds evidence freshness/supersession, versioned waterfalls, review-first entity resolution, and enrichment ledger references. M7 revision `1857fd4e0d6e` adds versioned AI prompt/taxonomy definitions, opportunity-analysis runs, grounded hypotheses/citations, final human review, and exactly-one-of-three shared ledger references; `5e550b440693` completes shared-ledger foreign-key indexing. All application data lives in the non-exposed `scout` schema with RLS enabled and no browser/Data API grants. Authentication, membership policies, contacts, outreach, and other later entities remain planned.
 
 ## 1. Design principles
 
@@ -155,11 +155,11 @@ Claims are not overwritten. Corrections create a new claim and set `supersedes_c
 
 ## 7. Opportunities and contacts
 
-### `opportunities`
+### `ai_prompt_definitions`, `opportunity_analysis_runs`, and `opportunity_hypotheses`
 
-`workspace_id`, `lead_id`, service category, title, hypothesis text, rationale, confidence, status (`hypothesis`, `needs_review`, `accepted`, `rejected`, `stale`), author type/user/model, model and prompt versions, timestamps. Accepted status requires human actor and review time.
+Published prompt definitions version the system instructions, structured-output schema, configurable taxonomy, and content hash. Analysis runs record the lead, idempotent job, provider/model versions, token usage, exact evidence snapshot, excluded instruction-like claims, input fingerprint, missing data, contradictions, status, and errors.
 
-`opportunity_evidence` links supporting or contradicting claims with a relation enum.
+Opportunity hypotheses store the service category, title, advisory summary, confidence, missing data, contradictions, and review state. `opportunity_hypothesis_evidence` uses foreign keys to require citations to durable evidence claims. `opportunity_review_decisions` records one final operator accept/reject decision; acceptance does not turn an AI hypothesis into a verified claim.
 
 ### `contact_points`
 

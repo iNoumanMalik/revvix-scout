@@ -10,6 +10,8 @@ from revvix_scout.providers.fixture import FictionalAccountingProvider
 from revvix_scout.providers.individual_contracts import IndividualProviderRegistry
 from revvix_scout.providers.individual_fixture import FictionalProfessionalProvider
 from revvix_scout.providers.manual import ManualInputProvider
+from revvix_scout.providers.opportunity_contracts import OpportunityAnalysisProviderRegistry
+from revvix_scout.providers.opportunity_fixture import FictionalOpportunityAnalysisProvider
 
 
 def create_provider_registry() -> ProviderRegistry:
@@ -36,3 +38,9 @@ def create_enrichment_provider_registry() -> EnrichmentProviderRegistry:
     """Return the fictional, metadata-only M6 enrichment registry."""
 
     return EnrichmentProviderRegistry((FictionalFirmographicEnrichmentProvider(),))
+
+
+def create_opportunity_analysis_provider_registry() -> OpportunityAnalysisProviderRegistry:
+    """Return the no-tools, deterministic M7 fixture registry."""
+
+    return OpportunityAnalysisProviderRegistry((FictionalOpportunityAnalysisProvider(),))

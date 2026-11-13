@@ -35,6 +35,10 @@ from revvix_scout.application.contracts import (
     LeadDetail,
     LeadPage,
     ManualDiscoveryRequest,
+    OpportunityAnalysisRunRequest,
+    OpportunityAnalysisRunView,
+    OpportunityHypothesisView,
+    OpportunityReviewRequest,
     PersonSuppressionRequest,
     PersonSuppressionView,
 )
@@ -85,9 +89,16 @@ from revvix_scout.application.leads import (
     get_lead_detail,
     list_leads,
 )
+from revvix_scout.application.opportunities import (
+    OpportunityAnalysisError,
+    OpportunityAnalysisNotApprovedError,
+    execute_opportunity_analysis,
+    review_opportunity_hypothesis,
+)
 from revvix_scout.application.usage import BudgetExceededError
 from revvix_scout.config import Settings, get_settings
 from revvix_scout.db.models import (
+    AiPromptDefinition,
     DecisionMakerCandidate,
     DiscoveryCandidate,
     DiscoveryRun,
@@ -98,6 +109,9 @@ from revvix_scout.db.models import (
     IndividualDiscoveryCandidate,
     Job,
     JobAttempt,
+    OpportunityAnalysisRun,
+    OpportunityHypothesis,
+    OpportunityHypothesisEvidence,
     SourceDocument,
 )
 from revvix_scout.db.session import get_db_session
@@ -117,10 +131,14 @@ from revvix_scout.providers.individual_contracts import (
     IndividualDiscoveryQuery,
     IndividualProviderNotRegisteredError,
 )
+from revvix_scout.providers.opportunity_contracts import (
+    OpportunityAnalysisProviderNotRegisteredError,
+)
 from revvix_scout.providers.registry import (
     create_decision_maker_provider_registry,
     create_enrichment_provider_registry,
     create_individual_provider_registry,
+    create_opportunity_analysis_provider_registry,
     create_provider_registry,
 )
 
@@ -131,6 +149,7 @@ provider_registry = create_provider_registry()
 individual_provider_registry = create_individual_provider_registry()
 decision_maker_provider_registry = create_decision_maker_provider_registry()
 enrichment_provider_registry = create_enrichment_provider_registry()
+opportunity_analysis_provider_registry = create_opportunity_analysis_provider_registry()
 
 
 @router.get("/health", tags=["system"])
@@ -632,6 +651,91 @@ def read_enrichment_run(
 
 
 @router.post(
+    "/v1/leads/{lead_id}/opportunity-analysis-runs",
+    response_model=OpportunityAnalysisRunView,
+    tags=["opportunities"],
+)
+def create_opportunity_analysis_run(
+    lead_id: UUID,
+    request: OpportunityAnalysisRunRequest,
+    session: DbSession,
+    settings: AppSettings,
+) -> OpportunityAnalysisRunView:
+    """Execute one budgeted, fictional, evidence-grounded opportunity analysis."""
+
+    try:
+        run = execute_opportunity_analysis(
+            session=session,
+            settings=settings,
+            registry=opportunity_analysis_provider_registry,
+            lead_id=lead_id,
+            provider_key=request.provider_key,
+            idempotency_key=request.idempotency_key,
+        )
+    except OpportunityAnalysisProviderNotRegisteredError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OpportunityAnalysisNotApprovedError as exc:
+        session.rollback()
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except BudgetExceededError as exc:
+        session.rollback()
+        raise HTTPException(status_code=402, detail=str(exc)) from exc
+    except OpportunityAnalysisError as exc:
+        session.rollback()
+        status_code = 404 if str(exc) == "Lead not found" else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    return _opportunity_analysis_view(session, run)
+
+
+@router.get(
+    "/v1/opportunity-analysis-runs/{run_id}",
+    response_model=OpportunityAnalysisRunView,
+    tags=["opportunities"],
+)
+def read_opportunity_analysis_run(
+    run_id: UUID, session: DbSession, settings: AppSettings
+) -> OpportunityAnalysisRunView:
+    run = session.scalar(
+        select(OpportunityAnalysisRun).where(
+            OpportunityAnalysisRun.id == run_id,
+            OpportunityAnalysisRun.workspace_id == settings.default_workspace_id,
+        )
+    )
+    if run is None:
+        raise HTTPException(status_code=404, detail="Opportunity analysis run not found")
+    return _opportunity_analysis_view(session, run)
+
+
+@router.post(
+    "/v1/opportunity-hypotheses/{hypothesis_id}/review",
+    response_model=OpportunityHypothesisView,
+    tags=["opportunities"],
+)
+def review_opportunity(
+    hypothesis_id: UUID,
+    request: OpportunityReviewRequest,
+    session: DbSession,
+    settings: AppSettings,
+) -> OpportunityHypothesisView:
+    """Record one final human decision for an unverified AI hypothesis."""
+
+    try:
+        hypothesis = review_opportunity_hypothesis(
+            session=session,
+            settings=settings,
+            hypothesis_id=hypothesis_id,
+            decision=request.decision,
+            reason=request.reason,
+        )
+    except OpportunityAnalysisError as exc:
+        session.rollback()
+        status_code = 404 if "not found" in str(exc) else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    return _opportunity_hypothesis_view(session, hypothesis)
+
+
+@router.post(
     "/v1/entity-match-candidates",
     response_model=EntityMatchView,
     tags=["entity-resolution"],
@@ -797,6 +901,61 @@ def _enrichment_view(session: Session, run: EnrichmentRun) -> EnrichmentRunView:
             )
             for claim, document in rows
         ],
+    )
+
+
+def _opportunity_analysis_view(
+    session: Session, run: OpportunityAnalysisRun
+) -> OpportunityAnalysisRunView:
+    prompt = session.get(AiPromptDefinition, run.prompt_definition_id)
+    if prompt is None:
+        raise OpportunityAnalysisError("Opportunity prompt disappeared")
+    hypotheses = session.scalars(
+        select(OpportunityHypothesis)
+        .where(OpportunityHypothesis.analysis_run_id == run.id)
+        .order_by(OpportunityHypothesis.created_at, OpportunityHypothesis.id)
+    ).all()
+    return OpportunityAnalysisRunView(
+        id=run.id,
+        lead_id=run.lead_id,
+        provider_key=run.provider_key,
+        status=run.status,
+        prompt_key=prompt.prompt_key,
+        prompt_version=prompt.version,
+        output_schema_version=prompt.output_schema_version,
+        taxonomy_version=prompt.taxonomy_version,
+        model_name=run.model_name,
+        model_version=run.model_version,
+        prompt_tokens=run.prompt_tokens,
+        completion_tokens=run.completion_tokens,
+        injection_detected=run.injection_detected,
+        excluded_claim_ids=[UUID(item) for item in run.excluded_claim_ids_json],
+        missing_fields=list(run.missing_fields_json),
+        contradictions=list(run.contradictions_json),
+        error_code=run.error_code,
+        error_message=run.error_message,
+        hypotheses=[_opportunity_hypothesis_view(session, item) for item in hypotheses],
+    )
+
+
+def _opportunity_hypothesis_view(
+    session: Session, hypothesis: OpportunityHypothesis
+) -> OpportunityHypothesisView:
+    claim_ids = session.scalars(
+        select(OpportunityHypothesisEvidence.evidence_claim_id)
+        .where(OpportunityHypothesisEvidence.hypothesis_id == hypothesis.id)
+        .order_by(OpportunityHypothesisEvidence.evidence_claim_id)
+    ).all()
+    return OpportunityHypothesisView(
+        id=hypothesis.id,
+        category=hypothesis.category,
+        title=hypothesis.title,
+        summary=hypothesis.summary,
+        confidence=hypothesis.confidence,
+        review_status=hypothesis.review_status,
+        citation_claim_ids=list(claim_ids),
+        missing_fields=list(hypothesis.missing_fields_json),
+        contradictions=list(hypothesis.contradictions_json),
     )
 
 

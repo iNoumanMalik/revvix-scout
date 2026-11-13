@@ -12,6 +12,7 @@ from revvix_scout.db.models import (
     BudgetReservation,
     DiscoveryRun,
     EnrichmentRun,
+    OpportunityAnalysisRun,
     ProviderUsageEvent,
 )
 
@@ -182,6 +183,94 @@ def settle_enrichment_usage(
         ProviderUsageEvent(
             workspace_id=settings.default_workspace_id,
             enrichment_run_id=run.id,
+            reservation_id=reservation.id,
+            provider_key=provider_key,
+            operation=operation,
+            outcome=outcome,
+            estimated_units=reservation.reserved_units,
+            actual_units=actual_units,
+            unit_type="request",
+            billable=False,
+            occurred_at=now,
+        )
+    )
+
+
+def reserve_opportunity_analysis_budget(
+    *,
+    session: Session,
+    settings: Settings,
+    run: OpportunityAnalysisRun,
+    provider_key: str,
+    operation: str,
+    estimated_units: int,
+    now: datetime,
+) -> BudgetReservation:
+    """Reserve one opportunity-analysis call under an atomic hard cap."""
+
+    policy = session.scalar(
+        select(BudgetPolicy)
+        .where(
+            BudgetPolicy.workspace_id == settings.default_workspace_id,
+            BudgetPolicy.provider_key == provider_key,
+            BudgetPolicy.operation == operation,
+            BudgetPolicy.window_kind == "run",
+            BudgetPolicy.enabled.is_(True),
+        )
+        .with_for_update()
+    )
+    if policy is None:
+        raise BudgetExceededError("No enabled budget policy; default deny")
+    active_units = session.scalar(
+        select(func.coalesce(func.sum(BudgetReservation.reserved_units), 0)).where(
+            BudgetReservation.opportunity_analysis_run_id == run.id,
+            BudgetReservation.status == "active",
+        )
+    )
+    settled_units = session.scalar(
+        select(func.coalesce(func.sum(ProviderUsageEvent.actual_units), 0)).where(
+            ProviderUsageEvent.opportunity_analysis_run_id == run.id
+        )
+    )
+    if int(active_units or 0) + int(settled_units or 0) + estimated_units > policy.hard_limit_units:
+        raise BudgetExceededError("Provider call would exceed the hard run budget")
+    reservation = BudgetReservation(
+        id=uuid4(),
+        workspace_id=settings.default_workspace_id,
+        opportunity_analysis_run_id=run.id,
+        provider_key=provider_key,
+        operation=operation,
+        reserved_units=estimated_units,
+        status="active",
+        reserved_at=now,
+        expires_at=now + timedelta(minutes=5),
+    )
+    session.add(reservation)
+    session.flush()
+    return reservation
+
+
+def settle_opportunity_analysis_usage(
+    *,
+    session: Session,
+    settings: Settings,
+    run: OpportunityAnalysisRun,
+    reservation: BudgetReservation,
+    provider_key: str,
+    operation: str,
+    actual_units: int,
+    outcome: str,
+    now: datetime,
+) -> None:
+    """Settle one opportunity-analysis reservation and append immutable usage."""
+
+    reservation.status = "settled"
+    reservation.settled_units = actual_units
+    reservation.settled_at = now
+    session.add(
+        ProviderUsageEvent(
+            workspace_id=settings.default_workspace_id,
+            opportunity_analysis_run_id=run.id,
             reservation_id=reservation.id,
             provider_key=provider_key,
             operation=operation,

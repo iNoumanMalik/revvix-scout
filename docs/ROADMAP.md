@@ -129,6 +129,8 @@ This is the smallest functional milestone worth implementing. It validates the c
 
 ## M7 — AI qualification and opportunity detection
 
+**Implementation status:** Complete on 2026-11-13 for the approved provider-free, fictional-only scope. Structured provider contracts, a deterministic no-tools adapter, versioned prompts/taxonomy, exact evidence snapshots, prompt-injection exclusion, fail-closed citation validation, opportunity hypotheses, shared budget/usage settlement, API execution, and final append-only human review are implemented. Revisions `1857fd4e0d6e` and `5e550b440693` are applied to isolated local PostgreSQL. The full 100-test suite, schema-drift check, 41-table RLS audit, grant/index/constraint audit, and ledger-integrity audit pass. A live LLM remains separately gated by provider/data-policy approval and is not required for this fictional milestone.
+
 **Outcome:** Evidence-grounded opportunity briefs augment deterministic qualification.
 
 **Dependencies:** M6 evidence quality; approved LLM provider/data policy and opportunity taxonomy.

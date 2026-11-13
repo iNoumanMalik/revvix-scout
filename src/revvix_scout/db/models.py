@@ -1379,6 +1379,195 @@ class IndividualReviewDecision(Base):
     )
 
 
+class AiPromptDefinition(Base):
+    __tablename__ = "ai_prompt_definitions"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    prompt_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="draft")
+    system_instructions: Mapped[str] = mapped_column(Text, nullable=False)
+    output_schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    taxonomy_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    taxonomy_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "prompt_key", "version", name="uq_ai_prompt_definitions_version"
+        ),
+        CheckConstraint("version > 0", name="version_positive"),
+        CheckConstraint("output_schema_version > 0", name="output_schema_version_positive"),
+        CheckConstraint("taxonomy_version > 0", name="taxonomy_version_positive"),
+        CheckConstraint("status in ('draft', 'published', 'retired')", name="status_valid"),
+        CheckConstraint(
+            "(status = 'published' and published_at is not null) or status <> 'published'",
+            name="published_requires_timestamp",
+        ),
+        Index("ix_ai_prompt_definitions_workspace_status", "workspace_id", "status"),
+        {"schema": "scout"},
+    )
+
+
+class OpportunityAnalysisRun(Base, TimestampMixin):
+    __tablename__ = "opportunity_analysis_runs"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    lead_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.leads.id", ondelete="CASCADE"), nullable=False
+    )
+    job_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.jobs.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    prompt_definition_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.ai_prompt_definitions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    provider_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    model_name: Mapped[str | None] = mapped_column(String(120))
+    model_version: Mapped[str | None] = mapped_column(String(120))
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer)
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_snapshot_json: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    excluded_claim_ids_json: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued")
+    injection_detected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    missing_fields_json: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    contradictions_json: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "lead_id",
+            "prompt_definition_id",
+            "input_fingerprint",
+            name="uq_opportunity_analysis_runs_input",
+        ),
+        CheckConstraint(
+            "status in ('queued', 'running', 'succeeded', 'failed')", name="status_valid"
+        ),
+        CheckConstraint(
+            "prompt_tokens is null or prompt_tokens >= 0", name="prompt_tokens_nonnegative"
+        ),
+        CheckConstraint(
+            "completion_tokens is null or completion_tokens >= 0",
+            name="completion_tokens_nonnegative",
+        ),
+        Index(
+            "ix_opportunity_analysis_runs_workspace_status",
+            "workspace_id",
+            "status",
+            "created_at",
+        ),
+        Index("ix_opportunity_analysis_runs_lead_created", "lead_id", "created_at"),
+        Index("ix_opportunity_analysis_runs_prompt", "prompt_definition_id"),
+        {"schema": "scout"},
+    )
+
+
+class OpportunityHypothesis(Base):
+    __tablename__ = "opportunity_hypotheses"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    analysis_run_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.opportunity_analysis_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    category: Mapped[str] = mapped_column(String(80), nullable=False)
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    review_status: Mapped[str] = mapped_column(String(24), nullable=False, default="unreviewed")
+    missing_fields_json: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    contradictions_json: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("confidence >= 0 and confidence <= 1", name="confidence_range"),
+        CheckConstraint(
+            "review_status in ('unreviewed', 'accepted', 'rejected')",
+            name="review_status_valid",
+        ),
+        Index("ix_opportunity_hypotheses_run", "analysis_run_id"),
+        Index("ix_opportunity_hypotheses_workspace_review", "workspace_id", "review_status"),
+        {"schema": "scout"},
+    )
+
+
+class OpportunityHypothesisEvidence(Base):
+    __tablename__ = "opportunity_hypothesis_evidence"
+
+    hypothesis_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.opportunity_hypotheses.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    evidence_claim_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.evidence_claims.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+
+    __table_args__ = (
+        Index("ix_opportunity_hypothesis_evidence_claim", "evidence_claim_id"),
+        {"schema": "scout"},
+    )
+
+
+class OpportunityReviewDecision(Base):
+    __tablename__ = "opportunity_review_decisions"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    hypothesis_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.opportunity_hypotheses.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    decision: Mapped[str] = mapped_column(String(24), nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(24), nullable=False, default="operator")
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("decision in ('accept', 'reject')", name="decision_valid"),
+        CheckConstraint("actor_type = 'operator'", name="actor_type_valid"),
+        Index("ix_opportunity_review_decisions_workspace_decided", "workspace_id", "decided_at"),
+        {"schema": "scout"},
+    )
+
+
 class BudgetReservation(Base):
     __tablename__ = "budget_reservations"
 
@@ -1393,6 +1582,10 @@ class BudgetReservation(Base):
     enrichment_run_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("scout.enrichment_runs.id", ondelete="CASCADE"),
+    )
+    opportunity_analysis_run_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.opportunity_analysis_runs.id", ondelete="CASCADE"),
     )
     provider_key: Mapped[str] = mapped_column(String(80), nullable=False)
     operation: Mapped[str] = mapped_column(String(80), nullable=False)
@@ -1410,8 +1603,12 @@ class BudgetReservation(Base):
         ),
         CheckConstraint("status in ('active', 'settled', 'released')", name="status_valid"),
         CheckConstraint(
-            "(discovery_run_id is not null and enrichment_run_id is null) or "
-            "(discovery_run_id is null and enrichment_run_id is not null)",
+            "(discovery_run_id is not null and enrichment_run_id is null "
+            "and opportunity_analysis_run_id is null) or "
+            "(discovery_run_id is null and enrichment_run_id is not null "
+            "and opportunity_analysis_run_id is null) or "
+            "(discovery_run_id is null and enrichment_run_id is null "
+            "and opportunity_analysis_run_id is not null)",
             name="run_reference_valid",
         ),
         Index(
@@ -1424,6 +1621,12 @@ class BudgetReservation(Base):
             "enrichment_run_id",
             "status",
         ),
+        Index(
+            "ix_budget_reservations_opportunity_run_status",
+            "opportunity_analysis_run_id",
+            "status",
+        ),
+        Index("ix_budget_reservations_workspace", "workspace_id"),
         {"schema": "scout"},
     )
 
@@ -1443,6 +1646,10 @@ class ProviderUsageEvent(Base):
         PGUUID(as_uuid=True),
         ForeignKey("scout.enrichment_runs.id", ondelete="CASCADE"),
     )
+    opportunity_analysis_run_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.opportunity_analysis_runs.id", ondelete="CASCADE"),
+    )
     reservation_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("scout.budget_reservations.id", ondelete="RESTRICT"),
@@ -1461,8 +1668,12 @@ class ProviderUsageEvent(Base):
         CheckConstraint("estimated_units >= 0 and actual_units >= 0", name="units_nonnegative"),
         CheckConstraint("outcome in ('succeeded', 'failed', 'partial')", name="outcome_valid"),
         CheckConstraint(
-            "(discovery_run_id is not null and enrichment_run_id is null) or "
-            "(discovery_run_id is null and enrichment_run_id is not null)",
+            "(discovery_run_id is not null and enrichment_run_id is null "
+            "and opportunity_analysis_run_id is null) or "
+            "(discovery_run_id is null and enrichment_run_id is not null "
+            "and opportunity_analysis_run_id is null) or "
+            "(discovery_run_id is null and enrichment_run_id is null "
+            "and opportunity_analysis_run_id is not null)",
             name="run_reference_valid",
         ),
         Index("ix_provider_usage_events_run_occurred", "discovery_run_id", "occurred_at"),
@@ -1471,5 +1682,12 @@ class ProviderUsageEvent(Base):
             "enrichment_run_id",
             "occurred_at",
         ),
+        Index(
+            "ix_provider_usage_events_opportunity_run_occurred",
+            "opportunity_analysis_run_id",
+            "occurred_at",
+        ),
+        Index("ix_provider_usage_events_workspace", "workspace_id"),
+        Index("ix_provider_usage_events_reservation", "reservation_id"),
         {"schema": "scout"},
     )
