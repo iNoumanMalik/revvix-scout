@@ -641,6 +641,7 @@ class DiscoveryRun(Base, TimestampMixin):
     )
     provider_key: Mapped[str] = mapped_column(String(80), nullable=False)
     pipeline_kind: Mapped[str] = mapped_column(String(24), nullable=False, default="business")
+    discovery_kind: Mapped[str] = mapped_column(String(24), nullable=False, default="company")
     request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     request_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued")
@@ -657,6 +658,11 @@ class DiscoveryRun(Base, TimestampMixin):
         UniqueConstraint("job_id"),
         UniqueConstraint("workspace_id", "request_fingerprint"),
         CheckConstraint("pipeline_kind in ('business', 'individual')", name="pipeline_kind_valid"),
+        CheckConstraint(
+            "(pipeline_kind = 'business' and discovery_kind in ('company', 'decision_maker')) or "
+            "(pipeline_kind = 'individual' and discovery_kind = 'individual')",
+            name="discovery_kind_matches_pipeline",
+        ),
         CheckConstraint(
             "status in ('queued', 'running', 'succeeded', 'partially_succeeded', 'failed')",
             name="status_valid",
@@ -787,6 +793,125 @@ class IndividualDiscoveryCandidate(Base, TimestampMixin):
         ),
         Index("ix_individual_candidates_possible_match", "possible_match_person_id"),
         Index("ix_individual_candidates_duplicate", "duplicate_person_id"),
+        {"schema": "scout"},
+    )
+
+
+class DecisionMakerCandidate(Base, TimestampMixin):
+    __tablename__ = "decision_maker_candidates"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    discovery_run_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.discovery_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    company_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.companies.id", ondelete="CASCADE"), nullable=False
+    )
+    provider_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    provider_record_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(240), nullable=False)
+    normalized_name: Mapped[str] = mapped_column(String(240), nullable=False)
+    professional_profile_url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    normalized_profile_url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    title_original: Mapped[str] = mapped_column(String(240), nullable=False)
+    title_normalized: Mapped[str] = mapped_column(String(240), nullable=False)
+    seniority: Mapped[str | None] = mapped_column(String(40))
+    department: Mapped[str | None] = mapped_column(String(80))
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    is_fictional: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    role_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    role_maximum_score: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    rejection_reason: Mapped[str | None] = mapped_column(String(160))
+    duplicate_person_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.people.id", ondelete="SET NULL")
+    )
+    qualification_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    provenance_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "discovery_run_id",
+            "provider_key",
+            "provider_record_id",
+            name="uq_decision_maker_candidates_run_provider_record",
+        ),
+        CheckConstraint(
+            "status in ('new', 'duplicate', 'rejected', 'promoted')",
+            name="status_valid",
+        ),
+        CheckConstraint(
+            "role_score >= 0 and role_score <= role_maximum_score and role_maximum_score > 0",
+            name="role_score_valid",
+        ),
+        CheckConstraint("is_fictional", name="fictional_only"),
+        Index("ix_decision_maker_candidates_run_created", "discovery_run_id", "created_at", "id"),
+        Index("ix_decision_maker_candidates_company_status", "company_id", "status"),
+        Index("ix_decision_maker_candidates_workspace_created", "workspace_id", "created_at"),
+        Index("ix_decision_maker_candidates_duplicate_person", "duplicate_person_id"),
+        {"schema": "scout"},
+    )
+
+
+class PersonCompanyRole(Base, TimestampMixin):
+    __tablename__ = "person_company_roles"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    person_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.people.id", ondelete="CASCADE"), nullable=False
+    )
+    company_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.companies.id", ondelete="CASCADE"), nullable=False
+    )
+    source_candidate_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.decision_maker_candidates.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    title_original: Mapped[str] = mapped_column(String(240), nullable=False)
+    title_normalized: Mapped[str] = mapped_column(String(240), nullable=False)
+    seniority: Mapped[str | None] = mapped_column(String(40))
+    department: Mapped[str | None] = mapped_column(String(80))
+    relationship_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    started_on: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ended_on: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    evidence_classification: Mapped[str] = mapped_column(String(32), nullable=False)
+    verification_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("source_candidate_id", name="uq_person_company_roles_source_candidate"),
+        CheckConstraint(
+            "relationship_type in ('partner', 'director', 'employee', 'owner')",
+            name="relationship_type_valid",
+        ),
+        CheckConstraint(
+            "evidence_classification in ('provider_asserted', 'human_verified')",
+            name="evidence_classification_valid",
+        ),
+        CheckConstraint(
+            "verification_status in ('source_asserted', 'human_verified')",
+            name="verification_status_valid",
+        ),
+        CheckConstraint(
+            "ended_on is null or started_on is null or ended_on >= started_on",
+            name="role_dates_valid",
+        ),
+        CheckConstraint("not is_current or ended_on is null", name="current_role_has_no_end"),
+        Index("ix_person_company_roles_person_id", "person_id"),
+        Index("ix_person_company_roles_company_current", "company_id", "is_current"),
+        Index("ix_person_company_roles_workspace_created", "workspace_id", "created_at"),
         {"schema": "scout"},
     )
 

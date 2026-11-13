@@ -323,3 +323,53 @@ class PersonSuppressionView(BaseModel):
     status: str
     reason_category: str
     effective_at: datetime
+
+
+class DecisionMakerRunRequest(BaseModel):
+    provider_key: str = "fictional_decision_maker_directory"
+    limit: Annotated[int, Field(ge=1, le=100)] = 25
+    idempotency_key: Annotated[str, Field(min_length=8, max_length=160)]
+
+
+class DecisionMakerCandidateView(BaseModel):
+    id: UUID
+    company_id: UUID
+    display_name: str
+    professional_profile_url: str
+    title: str
+    seniority: str | None
+    department: str | None
+    is_current: bool
+    role_score: int
+    matched_role: str | None
+    qualification_explanation: str
+    status: str
+    rejection_reason: str | None
+    source_url: str
+    observed_at: datetime
+    evidence_classification: str
+
+
+class DecisionMakerRunView(BaseModel):
+    id: UUID
+    company_id: UUID
+    provider_key: str
+    status: str
+    discovered_count: int
+    duplicate_count: int
+    rejected_count: int
+    error_code: str | None
+    error_message: str | None
+    candidates: list[DecisionMakerCandidateView]
+
+
+class DecisionMakerRoleView(BaseModel):
+    id: UUID
+    candidate_id: UUID
+    person_id: UUID
+    company_id: UUID
+    display_name: str
+    title: str
+    relationship_type: str
+    is_current: bool
+    evidence_classification: str

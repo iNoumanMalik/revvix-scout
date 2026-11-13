@@ -135,6 +135,7 @@ def enqueue_discovery(
         icp_version_id=settings.default_icp_version_id,
         provider_key=provider_key,
         pipeline_kind="business",
+        discovery_kind="company",
         request_fingerprint=fingerprint,
         request_json=request_json,
         status="queued",
@@ -163,6 +164,7 @@ def process_discovery_run(
             DiscoveryRun.id == run_id,
             DiscoveryRun.workspace_id == settings.default_workspace_id,
             DiscoveryRun.pipeline_kind == "business",
+            DiscoveryRun.discovery_kind == "company",
             or_(
                 and_(Job.status == "queued", Job.next_attempt_at <= claimed_at),
                 and_(Job.status == "running", Job.lease_expires_at < claimed_at),
@@ -332,6 +334,7 @@ def process_next_discovery_run(
         .where(
             DiscoveryRun.workspace_id == settings.default_workspace_id,
             DiscoveryRun.pipeline_kind == "business",
+            DiscoveryRun.discovery_kind == "company",
             or_(
                 and_(Job.status == "queued", Job.next_attempt_at <= claimed_at),
                 and_(Job.status == "running", Job.lease_expires_at < claimed_at),

@@ -8,6 +8,8 @@ Revision `410360f37f0b` is the M4 foundation migration. It adds three fictional-
 
 Revision `20a7a62a7d6a` is the M4 completion migration. It adds suppressions and immutable individual review decisions, enables RLS on both, and extends `leads` to require exactly one company or person subject matching `pipeline_kind`. Existing business rows remain valid and receive no data rewrite. Its downgrade explicitly deletes all individual leads before restoring the business-only constraint, so it is destructive and suitable only for an isolated disposable database.
 
+Revision `415f89420420` is the M5 fictional decision-maker migration. It adds decision-maker candidates and person-company roles, enables RLS on both, and adds a discovery-kind discriminator. Existing individual runs are backfilled as `individual` and existing business runs as `company` before the new column becomes non-null. The discriminator constraint permits `decision_maker` only inside the business pipeline. Its downgrade destroys all M5 candidates and roles and removes the discriminator.
+
 ## Apply and inspect
 
 Set `SCOUT_DATABASE_URL` to the intended database, then run:
@@ -29,7 +31,7 @@ alembic downgrade base
 alembic upgrade head
 ```
 
-The migration chain through revision `20a7a62a7d6a` was applied and verified against an isolated local database on 2026-11-13. Alembic reported no schema drift, all 27 application tables retained RLS, the private schema had no `PUBLIC` grants, all indexes were valid, and every foreign key touched by M4 had a supporting index. The full suite passed 63 tests. The destructive downgrade was not rerun. Do not use downgrade to recover shared or production data.
+The migration chain through revision `415f89420420` was applied and verified against an isolated local database on 2026-11-13. Alembic reported no schema drift, all 29 application tables retained RLS, the private schema had no `PUBLIC` grants, all indexes were valid, every M5 foreign key had a supporting primary, unique, or explicit index, and no discovery run violated the pipeline-kind discriminator. The full suite passed 69 tests. The destructive downgrade was not rerun. Do not use downgrade to recover shared or production data.
 
 ## Recovery strategy
 
@@ -41,4 +43,4 @@ The migration chain through revision `20a7a62a7d6a` was applied and verified aga
 
 ## RLS review
 
-RLS is enabled with no policies on all 27 application tables. Non-owner roles therefore have no row access, and the schema has no `PUBLIC` access. The direct backend connection operates as the table owner for local development. M2 must introduce workspace membership, explicit grants, policy tests for every role/action, and a non-owner application role before any browser or Data API exposure.
+RLS is enabled with no policies on all 29 application tables. Non-owner roles therefore have no row access, and the schema has no `PUBLIC` access. The direct backend connection operates as the table owner for local development. M2 must introduce workspace membership, explicit grants, policy tests for every role/action, and a non-owner application role before any browser or Data API exposure.

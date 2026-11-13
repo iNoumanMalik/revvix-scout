@@ -71,6 +71,7 @@ def execute_individual_discovery(
             select(DiscoveryRun).where(
                 DiscoveryRun.job_id == existing_job.id,
                 DiscoveryRun.pipeline_kind == "individual",
+                DiscoveryRun.discovery_kind == "individual",
             )
         )
         if existing is None:
@@ -137,6 +138,7 @@ def execute_individual_discovery(
         icp_version_id=icp_version.id,
         provider_key=provider_key,
         pipeline_kind="individual",
+        discovery_kind="individual",
         request_fingerprint=fingerprint,
         request_json=request_json,
         status="queued",

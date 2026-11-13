@@ -87,6 +87,13 @@ def bootstrap_defaults(session: Session, settings: Settings) -> None:
             1,
             True,
         ),
+        (
+            "fictional_decision_maker_directory",
+            "fixture",
+            "decision_maker_discovery",
+            1,
+            True,
+        ),
     )
     for provider_key, adapter_kind, operation, hard_limit, fictional_only in providers:
         provider = (
@@ -98,6 +105,13 @@ def bootstrap_defaults(session: Session, settings: Settings) -> None:
             .one_or_none()
         )
         if provider is None:
+            config_json: dict[str, object] = {"fictional_data_only": fictional_only}
+            if provider_key == "fictional_decision_maker_directory":
+                config_json["target_roles"] = [
+                    "Managing Partner",
+                    "Director",
+                    "Practice Manager",
+                ]
             session.add(
                 ProviderConfig(
                     workspace_id=settings.default_workspace_id,
@@ -106,7 +120,7 @@ def bootstrap_defaults(session: Session, settings: Settings) -> None:
                     enabled=True,
                     live_calls_allowed=False,
                     terms_review_status="approved",
-                    config_json={"fictional_data_only": fictional_only},
+                    config_json=config_json,
                     data_policy_json={
                         "retention_days": 14,
                         "contains_personal_data": False,

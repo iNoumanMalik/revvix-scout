@@ -2,7 +2,7 @@
 
 Revvix Scout is a free-first lead intelligence platform for discovering, researching, enriching, and qualifying potential customers for Revvix AI. It is designed around two independent prospect pipelines—individual professionals and businesses—backed by shared evidence, entity resolution, qualification, budget control, and reporting capabilities.
 
-> Status: M3 and the approved fictional-only M4 scope are complete. Individual discovery, human review, person-subject leads, and suppression are implemented and acceptance-tested against isolated local PostgreSQL. No live personal data, provider, LLM, outreach, paid-credit, hosted-Supabase, or cloud call is enabled.
+> Status: M3, the approved fictional-only M4 scope, and M5 fictional decision-maker research are complete and acceptance-tested against isolated local PostgreSQL. No live personal data, provider, LLM, outreach, paid-credit, hosted-Supabase, or cloud call is enabled.
 
 ## Product principles
 
@@ -27,6 +27,7 @@ Revvix Scout is a free-first lead intelligence platform for discovering, researc
 - [M3 discovery contract](docs/DISCOVERY_M3.md)
 - [Discovery CSV v1 contract](docs/DISCOVERY_CSV_V1.md)
 - [M4 fictional individual discovery contract](docs/INDIVIDUAL_DISCOVERY_M4.md)
+- [M5 fictional decision-maker research contract](docs/DECISION_MAKERS_M5.md)
 - [Repository instructions](AGENTS.md)
 
 ## Implemented M2A workflow
@@ -159,4 +160,4 @@ revvix-scout/
 
 ## Scope boundary
 
-M3 uses one deterministic development workspace and the approved configurable England accounting-firm ICP. M4 adds a separate fictional-only individual candidate path with no contact fields or live collection. Authentication/RLS membership policies remain an M2 dependency before any client or hosted use. The system does not include live people/contact collection, fuzzy auto-merging, LLM analysis, recurring scheduling, a frontend, deployment, or outreach. No paid service, hosted infrastructure, production migration, deployment, or external message is authorized.
+M3 uses one deterministic development workspace and the approved configurable England accounting-firm ICP. M4 adds a separate fictional-only individual candidate path. M5 adds fictional-only, company-scoped decision-maker role research with a separate operation budget and no contact fields. Authentication/RLS membership policies remain an M2 dependency before any client or hosted use. The system does not include live people/contact collection, fuzzy auto-merging, LLM analysis, recurring scheduling, a frontend, deployment, or outreach. No paid service, hosted infrastructure, production migration, deployment, or external message is authorized.

@@ -9,6 +9,10 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from revvix_scout.application.contracts import (
+    DecisionMakerCandidateView,
+    DecisionMakerRoleView,
+    DecisionMakerRunRequest,
+    DecisionMakerRunView,
     DiscoveryCandidateView,
     DiscoveryRunRequest,
     DiscoveryRunView,
@@ -24,6 +28,12 @@ from revvix_scout.application.contracts import (
     ManualDiscoveryRequest,
     PersonSuppressionRequest,
     PersonSuppressionView,
+)
+from revvix_scout.application.decision_makers import (
+    DecisionMakerCollectionNotApprovedError,
+    DecisionMakerDiscoveryError,
+    execute_decision_maker_discovery,
+    promote_decision_maker_candidate,
 )
 from revvix_scout.application.discovery import (
     DiscoveryError,
@@ -57,6 +67,7 @@ from revvix_scout.application.leads import (
 from revvix_scout.application.usage import BudgetExceededError
 from revvix_scout.config import Settings, get_settings
 from revvix_scout.db.models import (
+    DecisionMakerCandidate,
     DiscoveryCandidate,
     DiscoveryRun,
     IndividualDiscoveryCandidate,
@@ -70,11 +81,15 @@ from revvix_scout.providers.contracts import (
     ProviderNotRegisteredError,
 )
 from revvix_scout.providers.csv_input import CsvDiscoveryContractError, CsvInputProvider
+from revvix_scout.providers.decision_maker_contracts import (
+    DecisionMakerProviderNotRegisteredError,
+)
 from revvix_scout.providers.individual_contracts import (
     IndividualDiscoveryQuery,
     IndividualProviderNotRegisteredError,
 )
 from revvix_scout.providers.registry import (
+    create_decision_maker_provider_registry,
     create_individual_provider_registry,
     create_provider_registry,
 )
@@ -84,6 +99,7 @@ DbSession = Annotated[Session, Depends(get_db_session)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
 provider_registry = create_provider_registry()
 individual_provider_registry = create_individual_provider_registry()
+decision_maker_provider_registry = create_decision_maker_provider_registry()
 
 
 @router.get("/health", tags=["system"])
@@ -307,6 +323,7 @@ def read_discovery_run(run_id: UUID, session: DbSession, settings: AppSettings) 
             DiscoveryRun.id == run_id,
             DiscoveryRun.workspace_id == settings.default_workspace_id,
             DiscoveryRun.pipeline_kind == "business",
+            DiscoveryRun.discovery_kind == "company",
         )
     )
     if run is None:
@@ -369,6 +386,7 @@ def read_individual_discovery_run(
             DiscoveryRun.id == run_id,
             DiscoveryRun.workspace_id == settings.default_workspace_id,
             DiscoveryRun.pipeline_kind == "individual",
+            DiscoveryRun.discovery_kind == "individual",
         )
     )
     if run is None:
@@ -443,6 +461,89 @@ def create_person_suppression(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.post(
+    "/v1/companies/{company_id}/decision-maker-runs",
+    response_model=DecisionMakerRunView,
+    tags=["decision-makers"],
+)
+def create_decision_maker_run(
+    company_id: UUID,
+    request: DecisionMakerRunRequest,
+    session: DbSession,
+    settings: AppSettings,
+) -> DecisionMakerRunView:
+    """Research fictional decision-maker roles with a separate provider budget."""
+
+    try:
+        run = execute_decision_maker_discovery(
+            session=session,
+            settings=settings,
+            registry=decision_maker_provider_registry,
+            company_id=company_id,
+            provider_key=request.provider_key,
+            limit=request.limit,
+            idempotency_key=request.idempotency_key,
+        )
+    except DecisionMakerProviderNotRegisteredError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DecisionMakerCollectionNotApprovedError as exc:
+        session.rollback()
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except BudgetExceededError as exc:
+        session.rollback()
+        raise HTTPException(status_code=402, detail=str(exc)) from exc
+    except DecisionMakerDiscoveryError as exc:
+        session.rollback()
+        status_code = 404 if str(exc) == "Company not found" else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    return _decision_maker_view(session, run)
+
+
+@router.get(
+    "/v1/decision-maker-runs/{run_id}",
+    response_model=DecisionMakerRunView,
+    tags=["decision-makers"],
+)
+def read_decision_maker_run(
+    run_id: UUID, session: DbSession, settings: AppSettings
+) -> DecisionMakerRunView:
+    run = session.scalar(
+        select(DiscoveryRun).where(
+            DiscoveryRun.id == run_id,
+            DiscoveryRun.workspace_id == settings.default_workspace_id,
+            DiscoveryRun.pipeline_kind == "business",
+            DiscoveryRun.discovery_kind == "decision_maker",
+        )
+    )
+    if run is None:
+        raise HTTPException(status_code=404, detail="Decision-maker run not found")
+    return _decision_maker_view(session, run)
+
+
+@router.post(
+    "/v1/decision-maker-candidates/{candidate_id}/promote",
+    response_model=DecisionMakerRoleView,
+    tags=["decision-makers"],
+)
+def promote_decision_maker(
+    candidate_id: UUID, session: DbSession, settings: AppSettings
+) -> DecisionMakerRoleView:
+    """Promote one qualified fictional candidate into a durable company role."""
+
+    try:
+        return promote_decision_maker_candidate(
+            session=session, settings=settings, candidate_id=candidate_id
+        )
+    except DecisionMakerCollectionNotApprovedError as exc:
+        session.rollback()
+        raise HTTPException(status_code=423, detail=str(exc)) from exc
+    except DecisionMakerDiscoveryError as exc:
+        session.rollback()
+        status_code = 404 if "not found" in str(exc) else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
 def _discovery_view(session: Session, run: DiscoveryRun) -> DiscoveryRunView:
     job = session.get(Job, run.job_id)
     if job is None:
@@ -484,6 +585,50 @@ def _discovery_view(session: Session, run: DiscoveryRun) -> DiscoveryRunView:
                 observed_at=item.observed_at,
                 status=item.status,
                 rejection_reason=item.rejection_reason,
+            )
+            for item in candidates
+        ],
+    )
+
+
+def _decision_maker_view(session: Session, run: DiscoveryRun) -> DecisionMakerRunView:
+    candidates = session.scalars(
+        select(DecisionMakerCandidate)
+        .where(DecisionMakerCandidate.discovery_run_id == run.id)
+        .order_by(DecisionMakerCandidate.created_at, DecisionMakerCandidate.id)
+    ).all()
+    if not candidates:
+        company_id = UUID(str(run.request_json["company_id"]))
+    else:
+        company_id = candidates[0].company_id
+    return DecisionMakerRunView(
+        id=run.id,
+        company_id=company_id,
+        provider_key=run.provider_key,
+        status=run.status,
+        discovered_count=run.discovered_count,
+        duplicate_count=run.duplicate_count,
+        rejected_count=run.rejected_count,
+        error_code=run.error_code,
+        error_message=run.error_message,
+        candidates=[
+            DecisionMakerCandidateView(
+                id=item.id,
+                company_id=item.company_id,
+                display_name=item.display_name,
+                professional_profile_url=item.professional_profile_url,
+                title=item.title_original,
+                seniority=item.seniority,
+                department=item.department,
+                is_current=item.is_current,
+                role_score=item.role_score,
+                matched_role=item.qualification_json.get("matched_role"),
+                qualification_explanation=str(item.qualification_json["explanation"]),
+                status=item.status,
+                rejection_reason=item.rejection_reason,
+                source_url=item.source_url,
+                observed_at=item.observed_at,
+                evidence_classification=str(item.provenance_json["classification"]),
             )
             for item in candidates
         ],

@@ -101,6 +101,8 @@ This is the smallest functional milestone worth implementing. It validates the c
 
 ## M5 — Business discovery and decision-maker pipeline
 
+**Implementation status:** Complete on 2026-11-13 for the approved fictional-only scope. The provider port and adapter, configurable and explainable role scoring, company-scoped API, separate budget operation, suppression-aware idempotent promotion, current/historical person-company role model, and pipeline-isolation controls are implemented. Revision `415f89420420` is applied to the isolated test database; the full 69-test suite and database security/drift checks pass. Live person research remains blocked by the provider and privacy gates below.
+
 **Outcome:** Organizations are discovered and qualified first, then appropriate professional roles are identified.
 
 **Dependencies:** M3; industry/company-size ICP decisions.

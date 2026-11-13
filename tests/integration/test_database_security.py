@@ -28,6 +28,6 @@ def test_all_application_tables_have_rls_and_schema_is_not_public() -> None:
         ).scalar_one()
     engine.dispose()
 
-    assert table_count == 27
+    assert table_count == 29
     assert rls_count == table_count
     assert public_acl_count == 0

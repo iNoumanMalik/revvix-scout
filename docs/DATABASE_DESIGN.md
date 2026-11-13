@@ -1,9 +1,9 @@
 # Database design
 
-**Status:** Long-term logical design. M2A, M3, and the approved fictional-only M4 schema are implemented locally.
+**Status:** Long-term logical design. M2A, M3, and the approved fictional-only M4 and M5 schemas are implemented locally.
 **Target:** PostgreSQL 15+ / Supabase PostgreSQL
 
-The implemented model contains the M2A qualification records plus M3 provider configuration, jobs/attempts, discovery runs/candidates, budget policies/reservations, and provider usage events. M4 revision `410360f37f0b` adds people, canonical public-profile identities, and individual discovery candidates. Completion revision `20a7a62a7d6a` adds append-only review decisions, minimal suppressions, and exactly-one-subject business/person leads. It lives in the non-exposed `scout` schema with RLS enabled and no browser/Data API grants. Authentication, membership policies, contacts, outreach, and other later entities remain planned.
+The implemented model contains the M2A qualification records plus M3 provider configuration, jobs/attempts, discovery runs/candidates, budget policies/reservations, and provider usage events. M4 revision `410360f37f0b` adds people, canonical public-profile identities, and individual discovery candidates. Completion revision `20a7a62a7d6a` adds append-only review decisions, minimal suppressions, and exactly-one-subject business/person leads. M5 revision `415f89420420` adds fictional decision-maker candidates, person-company roles, and a discovery-kind discriminator. It lives in the non-exposed `scout` schema with RLS enabled and no browser/Data API grants. Authentication, membership policies, contacts, outreach, and other later entities remain planned.
 
 ## 1. Design principles
 
@@ -105,6 +105,8 @@ The M4 subset stores `workspace_id`, display/normalized name, locality/region/co
 
 Many-to-many employment/decision-maker history: `person_id`, `company_id`, title original/normalized, seniority, department, relationship type, current flag, start/end dates, evidence state, timestamps. A person can have multiple concurrent roles.
 
+The M5 subset links each promoted role to one immutable fictional decision-maker candidate. Date constraints permit current and historical roles while preventing an end before a start or an end date on a current role. Provider and verification classifications remain explicit.
+
 ### `external_identifiers`
 
 Provider/source identity keys: `workspace_id`, entity kind, company/person foreign key, provider, namespace, external ID, first/last seen. Check exactly one entity FK. Unique `(workspace_id, provider, namespace, external_id)`.
@@ -121,15 +123,17 @@ Possible duplicate pairs store algorithm version, features, score, status, and r
 
 ### `discovery_runs`
 
-`workspace_id`, pipeline kind, ICP version, source/provider, query definition, status, requested/started/completed timestamps, cursor metadata, candidate counts, budget snapshot, creator.
+`workspace_id`, pipeline kind, discovery kind, ICP version, source/provider, query definition, status, requested/started/completed timestamps, cursor metadata, candidate counts, budget snapshot, creator. Discovery kind distinguishes company, decision-maker, and individual runs while retaining the independent top-level business/individual pipeline boundary.
 
-### `discovery_candidates` and `individual_discovery_candidates`
+### `discovery_candidates`, `individual_discovery_candidates`, and `decision_maker_candidates`
 
 Append-oriented thin records: `discovery_run_id`, source record ID, raw-reference metadata, original/normalized name/domain/profile/location fields, fingerprint, status (`new`, `duplicate`, `possible_match`, `rejected`, `promoted`), resolved entity ID, reason, timestamps.
 
 Unique `(discovery_run_id, source_record_id)` where supplied and `(discovery_run_id, fingerprint)` as a fallback. Cross-run identity resolution happens through match keys, not by discarding candidate history.
 
 The M4 individual table keeps only allow-listed fictional professional fields, deterministic qualification output, source/observation metadata, and either an exact duplicate person or a possible-match person—not both. A check requires `retention_expires_at` whenever a record is not fictional. Provider contracts intentionally contain no contact fields.
+
+The M5 decision-maker table is company-scoped and fictional-only. It records canonical professional-profile identity, original and normalized title, explainable role score, source assertion, exact duplicate person when present, and promotion state. Its provider contract also contains no contact fields.
 
 ### `source_documents`
 
