@@ -10,6 +10,10 @@ Revision `20a7a62a7d6a` is the M4 completion migration. It adds suppressions and
 
 Revision `415f89420420` is the M5 fictional decision-maker migration. It adds decision-maker candidates and person-company roles, enables RLS on both, and adds a discovery-kind discriminator. Existing individual runs are backfilled as `individual` and existing business runs as `company` before the new column becomes non-null. The discriminator constraint permits `decision_maker` only inside the business pipeline. Its downgrade destroys all M5 candidates and roles and removes the discriminator.
 
+Revision `9e83bb75d0e3` is the M6 foundation migration. It adds seven RLS-enabled waterfall, subject-evidence, match-candidate, and merge-history tables and extends source documents and claims with license, cache, freshness, review, and supersession metadata. Existing rows receive explicit metadata-only/no-raw-content and unreviewed backfills before non-null enforcement. Its downgrade deletes enrichment-origin source documents and dependent claims before restoring the import-only source constraint, destroys all M6 records, and removes the added metadata.
+
+Revision `c53cc7e9a80b` is the M6 execution-ledger migration. It lets budget reservations and immutable usage events reference exactly one discovery or enrichment run, with indexed enrichment-run foreign keys. Existing discovery records remain valid without data rewriting. Its downgrade deletes enrichment usage events and reservations before restoring discovery-only non-null references. It was applied only to the approved isolated local test database.
+
 ## Apply and inspect
 
 Set `SCOUT_DATABASE_URL` to the intended database, then run:
@@ -33,6 +37,10 @@ alembic upgrade head
 
 The migration chain through revision `415f89420420` was applied and verified against an isolated local database on 2026-11-13. Alembic reported no schema drift, all 29 application tables retained RLS, the private schema had no `PUBLIC` grants, all indexes were valid, every M5 foreign key had a supporting primary, unique, or explicit index, and no discovery run violated the pipeline-kind discriminator. The full suite passed 69 tests. The destructive downgrade was not rerun. Do not use downgrade to recover shared or production data.
 
+Revision `9e83bb75d0e3` was then applied to the same isolated test database. Alembic reported no schema drift; all 36 application tables have RLS; there are no `PUBLIC` schema grants, invalid indexes, unvalidated M6 constraints, or unindexed M6 foreign-key columns. The expanded suite passed 76 tests. The destructive M6 downgrade was not run.
+
+Revision `c53cc7e9a80b` was subsequently applied to the same isolated test database. Alembic remained at head with no schema drift; all 36 application tables retained RLS; there are no `PUBLIC` schema grants, invalid indexes, or invalid discovery/enrichment ledger references. Concurrent reservations respect the hard cap, and the full suite passed 85 tests. Its destructive downgrade was not run.
+
 ## Recovery strategy
 
 - For disposable development data, recreate the schema with `alembic upgrade head` and re-import the original versioned CSV fixtures.
@@ -43,4 +51,4 @@ The migration chain through revision `415f89420420` was applied and verified aga
 
 ## RLS review
 
-RLS is enabled with no policies on all 29 application tables. Non-owner roles therefore have no row access, and the schema has no `PUBLIC` access. The direct backend connection operates as the table owner for local development. M2 must introduce workspace membership, explicit grants, policy tests for every role/action, and a non-owner application role before any browser or Data API exposure.
+RLS is enabled with no policies on all 36 application tables. Non-owner roles therefore have no row access, and the schema has no `PUBLIC` access. The direct backend connection operates as the table owner for local development. M2 must introduce workspace membership, explicit grants, policy tests for every role/action, and a non-owner application role before any browser or Data API exposure.

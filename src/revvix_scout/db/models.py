@@ -362,14 +362,23 @@ class SourceDocument(Base):
     lead_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("scout.leads.id", ondelete="CASCADE"), nullable=False
     )
-    import_row_id: Mapped[UUID] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("scout.import_rows.id", ondelete="CASCADE"), nullable=False
+    import_row_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.import_rows.id", ondelete="CASCADE")
+    )
+    enrichment_run_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.enrichment_runs.id", ondelete="CASCADE")
     )
     source_name: Mapped[str] = mapped_column(String(80), nullable=False, default="csv_import")
     source_type: Mapped[str] = mapped_column(String(40), nullable=False, default="import_row")
+    provider_key: Mapped[str | None] = mapped_column(String(80))
     source_record_id: Mapped[str] = mapped_column(String(160), nullable=False)
     canonical_url: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    license_policy_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    cache_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    redaction_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="metadata_only"
+    )
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -379,6 +388,18 @@ class SourceDocument(Base):
     __table_args__ = (
         UniqueConstraint("workspace_id", "content_hash"),
         UniqueConstraint("import_row_id"),
+        CheckConstraint(
+            "redaction_status in ('metadata_only', 'redacted', 'expired')",
+            name="redaction_status_valid",
+        ),
+        CheckConstraint(
+            "(import_row_id is not null and enrichment_run_id is null) or "
+            "(import_row_id is null and enrichment_run_id is not null)",
+            name="origin_reference_valid",
+        ),
+        Index("ix_source_documents_lead_retrieved", "lead_id", "retrieved_at"),
+        Index("ix_source_documents_enrichment_run", "enrichment_run_id"),
+        Index("ix_source_documents_cache_expiry", "cache_expires_at"),
         {"schema": "scout"},
     )
 
@@ -406,6 +427,12 @@ class EvidenceClaim(Base):
     verification_status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="source_asserted"
     )
+    review_status: Mapped[str] = mapped_column(String(24), nullable=False, default="unreviewed")
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    supersedes_claim_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.evidence_claims.id", ondelete="RESTRICT")
+    )
+    extractor_version: Mapped[str | None] = mapped_column(String(80))
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -419,6 +446,28 @@ class EvidenceClaim(Base):
             "classification in ('observed', 'provider_asserted', 'inferred', 'human_verified')",
             name="classification_valid",
         ),
+        CheckConstraint(
+            "verification_status in "
+            "('source_asserted', 'human_verified', 'conflicting', 'invalid')",
+            name="verification_status_valid",
+        ),
+        CheckConstraint(
+            "review_status in ('unreviewed', 'accepted', 'rejected', 'superseded')",
+            name="review_status_valid",
+        ),
+        CheckConstraint(
+            "supersedes_claim_id is null or supersedes_claim_id <> id",
+            name="cannot_supersede_self",
+        ),
+        Index("ix_evidence_claims_source_document", "source_document_id"),
+        Index("ix_evidence_claims_supersedes", "supersedes_claim_id"),
+        Index(
+            "ix_evidence_claims_workspace_type_review",
+            "workspace_id",
+            "claim_type",
+            "review_status",
+        ),
+        Index("ix_evidence_claims_valid_until", "valid_until"),
         {"schema": "scout"},
     )
 
@@ -436,6 +485,54 @@ class LeadEvidence(Base):
     )
 
     __table_args__ = ({"schema": "scout"},)
+
+
+class CompanyEvidence(Base):
+    __tablename__ = "company_evidence"
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    company_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.companies.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    evidence_claim_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.evidence_claims.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    __table_args__ = (
+        Index("ix_company_evidence_workspace", "workspace_id"),
+        Index("ix_company_evidence_claim", "evidence_claim_id"),
+        {"schema": "scout"},
+    )
+
+
+class PersonEvidence(Base):
+    __tablename__ = "person_evidence"
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    person_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.people.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    evidence_claim_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.evidence_claims.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    __table_args__ = (
+        Index("ix_person_evidence_workspace", "workspace_id"),
+        Index("ix_person_evidence_claim", "evidence_claim_id"),
+        {"schema": "scout"},
+    )
 
 
 class ScoreRun(Base):
@@ -620,6 +717,266 @@ class JobAttempt(Base):
         UniqueConstraint("job_id", "attempt_number"),
         CheckConstraint("attempt_number > 0", name="attempt_positive"),
         CheckConstraint("status in ('running', 'succeeded', 'failed')", name="status_valid"),
+        {"schema": "scout"},
+    )
+
+
+class EnrichmentPlan(Base, TimestampMixin):
+    __tablename__ = "enrichment_plans"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    icp_version_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.icp_versions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    pipeline_kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="draft")
+    required_fields_json: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "name", "version", name="uq_enrichment_plans_workspace_name_version"
+        ),
+        CheckConstraint("pipeline_kind in ('business', 'individual')", name="pipeline_kind_valid"),
+        CheckConstraint("version > 0", name="version_positive"),
+        CheckConstraint("status in ('draft', 'published', 'retired')", name="status_valid"),
+        CheckConstraint(
+            "(status = 'published' and published_at is not null) or status <> 'published'",
+            name="published_plan_has_timestamp",
+        ),
+        Index("ix_enrichment_plans_icp_version", "icp_version_id"),
+        Index("ix_enrichment_plans_workspace_status", "workspace_id", "status"),
+        {"schema": "scout"},
+    )
+
+
+class EnrichmentStep(Base, TimestampMixin):
+    __tablename__ = "enrichment_steps"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    plan_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.enrichment_plans.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    step_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    operation: Mapped[str] = mapped_column(String(80), nullable=False)
+    requested_fields_json: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    eligibility_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    freshness_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    estimated_units: Mapped[int] = mapped_column(Integer, nullable=False)
+    stop_if_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    fallback_step_order: Mapped[int | None] = mapped_column(Integer)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    __table_args__ = (
+        UniqueConstraint("plan_id", "step_order", name="uq_enrichment_steps_plan_order"),
+        CheckConstraint("step_order > 0", name="step_order_positive"),
+        CheckConstraint("freshness_days >= 0", name="freshness_nonnegative"),
+        CheckConstraint("estimated_units >= 0", name="estimated_units_nonnegative"),
+        CheckConstraint(
+            "fallback_step_order is null or fallback_step_order > step_order",
+            name="fallback_moves_forward",
+        ),
+        Index("ix_enrichment_steps_provider_operation", "provider_key", "operation"),
+        {"schema": "scout"},
+    )
+
+
+class EnrichmentRun(Base, TimestampMixin):
+    __tablename__ = "enrichment_runs"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    lead_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.leads.id", ondelete="CASCADE"), nullable=False
+    )
+    plan_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.enrichment_plans.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    job_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.jobs.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued")
+    current_step_order: Mapped[int | None] = mapped_column(Integer)
+    completed_fields_json: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    stop_reason: Mapped[str | None] = mapped_column(String(80))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint(
+            "status in "
+            "('queued', 'running', 'succeeded', 'partially_succeeded', 'failed', 'stopped')",
+            name="status_valid",
+        ),
+        CheckConstraint(
+            "current_step_order is null or current_step_order > 0",
+            name="current_step_positive",
+        ),
+        CheckConstraint(
+            "stop_reason is null or status in "
+            "('succeeded', 'partially_succeeded', 'failed', 'stopped')",
+            name="stop_reason_requires_terminal_status",
+        ),
+        Index("ix_enrichment_runs_workspace_status", "workspace_id", "status", "created_at"),
+        Index("ix_enrichment_runs_lead_created", "lead_id", "created_at"),
+        Index("ix_enrichment_runs_plan", "plan_id"),
+        {"schema": "scout"},
+    )
+
+
+class EntityMatchCandidate(Base, TimestampMixin):
+    __tablename__ = "entity_match_candidates"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    entity_kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    left_company_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.companies.id", ondelete="CASCADE")
+    )
+    right_company_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.companies.id", ondelete="CASCADE")
+    )
+    left_person_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.people.id", ondelete="CASCADE")
+    )
+    right_person_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.people.id", ondelete="CASCADE")
+    )
+    match_basis: Mapped[str] = mapped_column(String(24), nullable=False)
+    algorithm_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    features_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("entity_kind in ('company', 'person')", name="entity_kind_valid"),
+        CheckConstraint("match_basis in ('exact', 'fuzzy')", name="match_basis_valid"),
+        CheckConstraint("score >= 0 and score <= 1", name="score_range"),
+        CheckConstraint(
+            "status in ('pending', 'confirmed', 'rejected', 'merged')", name="status_valid"
+        ),
+        CheckConstraint(
+            "(entity_kind = 'company' and left_company_id is not null "
+            "and right_company_id is not null "
+            "and left_person_id is null and right_person_id is null) or "
+            "(entity_kind = 'person' and left_person_id is not null "
+            "and right_person_id is not null "
+            "and left_company_id is null and right_company_id is null)",
+            name="subjects_match_entity_kind",
+        ),
+        CheckConstraint(
+            "(entity_kind = 'company' and left_company_id < right_company_id) or "
+            "(entity_kind = 'person' and left_person_id < right_person_id)",
+            name="subjects_are_canonical_and_distinct",
+        ),
+        Index(
+            "uq_entity_match_candidates_company_pair",
+            "workspace_id",
+            "left_company_id",
+            "right_company_id",
+            unique=True,
+            postgresql_where=text("entity_kind = 'company'"),
+        ),
+        Index(
+            "uq_entity_match_candidates_person_pair",
+            "workspace_id",
+            "left_person_id",
+            "right_person_id",
+            unique=True,
+            postgresql_where=text("entity_kind = 'person'"),
+        ),
+        Index("ix_entity_match_candidates_left_company", "left_company_id"),
+        Index("ix_entity_match_candidates_right_company", "right_company_id"),
+        Index("ix_entity_match_candidates_left_person", "left_person_id"),
+        Index("ix_entity_match_candidates_right_person", "right_person_id"),
+        Index("ix_entity_match_candidates_workspace_status", "workspace_id", "status"),
+        {"schema": "scout"},
+    )
+
+
+class EntityMergeEvent(Base):
+    __tablename__ = "entity_merge_events"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    match_candidate_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.entity_match_candidates.id", ondelete="RESTRICT"),
+    )
+    entity_kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    action: Mapped[str] = mapped_column(String(24), nullable=False)
+    survivor_company_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.companies.id", ondelete="RESTRICT")
+    )
+    merged_company_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.companies.id", ondelete="RESTRICT")
+    )
+    survivor_person_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.people.id", ondelete="RESTRICT")
+    )
+    merged_person_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.people.id", ondelete="RESTRICT")
+    )
+    reverses_event_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("scout.entity_merge_events.id", ondelete="RESTRICT")
+    )
+    snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(24), nullable=False, default="operator")
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("entity_kind in ('company', 'person')", name="entity_kind_valid"),
+        CheckConstraint("action in ('merge', 'unmerge')", name="action_valid"),
+        CheckConstraint("actor_type = 'operator'", name="actor_type_valid"),
+        CheckConstraint(
+            "(entity_kind = 'company' and survivor_company_id is not null "
+            "and merged_company_id is not null "
+            "and survivor_person_id is null and merged_person_id is null) or "
+            "(entity_kind = 'person' and survivor_person_id is not null "
+            "and merged_person_id is not null "
+            "and survivor_company_id is null and merged_company_id is null)",
+            name="subjects_match_entity_kind",
+        ),
+        CheckConstraint(
+            "(entity_kind = 'company' and survivor_company_id <> merged_company_id) or "
+            "(entity_kind = 'person' and survivor_person_id <> merged_person_id)",
+            name="survivor_differs_from_merged",
+        ),
+        CheckConstraint(
+            "(action = 'merge' and reverses_event_id is null) or "
+            "(action = 'unmerge' and reverses_event_id is not null)",
+            name="unmerge_reverses_event",
+        ),
+        Index("ix_entity_merge_events_workspace_occurred", "workspace_id", "occurred_at"),
+        Index("ix_entity_merge_events_match_candidate", "match_candidate_id"),
+        Index("ix_entity_merge_events_reverses", "reverses_event_id"),
+        Index("ix_entity_merge_events_survivor_company", "survivor_company_id"),
+        Index("ix_entity_merge_events_merged_company", "merged_company_id"),
+        Index("ix_entity_merge_events_survivor_person", "survivor_person_id"),
+        Index("ix_entity_merge_events_merged_person", "merged_person_id"),
         {"schema": "scout"},
     )
 
@@ -1029,10 +1386,13 @@ class BudgetReservation(Base):
     workspace_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
     )
-    discovery_run_id: Mapped[UUID] = mapped_column(
+    discovery_run_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("scout.discovery_runs.id", ondelete="CASCADE"),
-        nullable=False,
+    )
+    enrichment_run_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.enrichment_runs.id", ondelete="CASCADE"),
     )
     provider_key: Mapped[str] = mapped_column(String(80), nullable=False)
     operation: Mapped[str] = mapped_column(String(80), nullable=False)
@@ -1049,9 +1409,19 @@ class BudgetReservation(Base):
             "settled_units is null or settled_units >= 0", name="settled_units_nonnegative"
         ),
         CheckConstraint("status in ('active', 'settled', 'released')", name="status_valid"),
+        CheckConstraint(
+            "(discovery_run_id is not null and enrichment_run_id is null) or "
+            "(discovery_run_id is null and enrichment_run_id is not null)",
+            name="run_reference_valid",
+        ),
         Index(
             "ix_budget_reservations_run_status",
             "discovery_run_id",
+            "status",
+        ),
+        Index(
+            "ix_budget_reservations_enrichment_run_status",
+            "enrichment_run_id",
             "status",
         ),
         {"schema": "scout"},
@@ -1065,10 +1435,13 @@ class ProviderUsageEvent(Base):
     workspace_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("scout.workspaces.id", ondelete="CASCADE"), nullable=False
     )
-    discovery_run_id: Mapped[UUID] = mapped_column(
+    discovery_run_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("scout.discovery_runs.id", ondelete="CASCADE"),
-        nullable=False,
+    )
+    enrichment_run_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("scout.enrichment_runs.id", ondelete="CASCADE"),
     )
     reservation_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
@@ -1087,6 +1460,16 @@ class ProviderUsageEvent(Base):
     __table_args__ = (
         CheckConstraint("estimated_units >= 0 and actual_units >= 0", name="units_nonnegative"),
         CheckConstraint("outcome in ('succeeded', 'failed', 'partial')", name="outcome_valid"),
+        CheckConstraint(
+            "(discovery_run_id is not null and enrichment_run_id is null) or "
+            "(discovery_run_id is null and enrichment_run_id is not null)",
+            name="run_reference_valid",
+        ),
         Index("ix_provider_usage_events_run_occurred", "discovery_run_id", "occurred_at"),
+        Index(
+            "ix_provider_usage_events_enrichment_run_occurred",
+            "enrichment_run_id",
+            "occurred_at",
+        ),
         {"schema": "scout"},
     )

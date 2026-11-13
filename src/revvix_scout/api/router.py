@@ -1,5 +1,6 @@
 """Versioned FastAPI routes for provider-free business and individual slices."""
 
+from datetime import UTC
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -16,6 +17,14 @@ from revvix_scout.application.contracts import (
     DiscoveryCandidateView,
     DiscoveryRunRequest,
     DiscoveryRunView,
+    EnrichmentClaimView,
+    EnrichmentRunRequest,
+    EnrichmentRunView,
+    EntityMatchRequest,
+    EntityMatchReviewRequest,
+    EntityMatchView,
+    EntityMergeEventView,
+    EntityUnmergeRequest,
     ImportSummary,
     IndividualCandidateView,
     IndividualDiscoveryRunRequest,
@@ -40,6 +49,18 @@ from revvix_scout.application.discovery import (
     ProviderDisabledError,
     execute_discovery,
     process_discovery_run,
+)
+from revvix_scout.application.enrichment import (
+    EnrichmentCollectionNotApprovedError,
+    EnrichmentError,
+    execute_enrichment,
+)
+from revvix_scout.application.entity_resolution import (
+    EntityResolutionError,
+    candidate_subject_ids,
+    create_match_candidate,
+    review_match_candidate,
+    unmerge_entity_event,
 )
 from revvix_scout.application.imports import ImportContractError, import_business_csv
 from revvix_scout.application.individual_discovery import (
@@ -70,9 +91,14 @@ from revvix_scout.db.models import (
     DecisionMakerCandidate,
     DiscoveryCandidate,
     DiscoveryRun,
+    EnrichmentRun,
+    EntityMatchCandidate,
+    EntityMergeEvent,
+    EvidenceClaim,
     IndividualDiscoveryCandidate,
     Job,
     JobAttempt,
+    SourceDocument,
 )
 from revvix_scout.db.session import get_db_session
 from revvix_scout.providers.contracts import (
@@ -84,12 +110,16 @@ from revvix_scout.providers.csv_input import CsvDiscoveryContractError, CsvInput
 from revvix_scout.providers.decision_maker_contracts import (
     DecisionMakerProviderNotRegisteredError,
 )
+from revvix_scout.providers.enrichment_contracts import (
+    EnrichmentProviderNotRegisteredError,
+)
 from revvix_scout.providers.individual_contracts import (
     IndividualDiscoveryQuery,
     IndividualProviderNotRegisteredError,
 )
 from revvix_scout.providers.registry import (
     create_decision_maker_provider_registry,
+    create_enrichment_provider_registry,
     create_individual_provider_registry,
     create_provider_registry,
 )
@@ -100,6 +130,7 @@ AppSettings = Annotated[Settings, Depends(get_settings)]
 provider_registry = create_provider_registry()
 individual_provider_registry = create_individual_provider_registry()
 decision_maker_provider_registry = create_decision_maker_provider_registry()
+enrichment_provider_registry = create_enrichment_provider_registry()
 
 
 @router.get("/health", tags=["system"])
@@ -544,6 +575,151 @@ def promote_decision_maker(
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
+@router.post(
+    "/v1/leads/{lead_id}/enrichment-runs",
+    response_model=EnrichmentRunView,
+    tags=["enrichment"],
+)
+def create_enrichment_run(
+    lead_id: UUID,
+    request: EnrichmentRunRequest,
+    session: DbSession,
+    settings: AppSettings,
+) -> EnrichmentRunView:
+    """Execute one budgeted fictional enrichment waterfall step."""
+
+    try:
+        run = execute_enrichment(
+            session=session,
+            settings=settings,
+            registry=enrichment_provider_registry,
+            lead_id=lead_id,
+            idempotency_key=request.idempotency_key,
+        )
+    except EnrichmentProviderNotRegisteredError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except EnrichmentCollectionNotApprovedError as exc:
+        session.rollback()
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except BudgetExceededError as exc:
+        session.rollback()
+        raise HTTPException(status_code=402, detail=str(exc)) from exc
+    except EnrichmentError as exc:
+        session.rollback()
+        status_code = 404 if str(exc) == "Lead not found" else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    return _enrichment_view(session, run)
+
+
+@router.get(
+    "/v1/enrichment-runs/{run_id}",
+    response_model=EnrichmentRunView,
+    tags=["enrichment"],
+)
+def read_enrichment_run(
+    run_id: UUID, session: DbSession, settings: AppSettings
+) -> EnrichmentRunView:
+    run = session.scalar(
+        select(EnrichmentRun).where(
+            EnrichmentRun.id == run_id,
+            EnrichmentRun.workspace_id == settings.default_workspace_id,
+        )
+    )
+    if run is None:
+        raise HTTPException(status_code=404, detail="Enrichment run not found")
+    return _enrichment_view(session, run)
+
+
+@router.post(
+    "/v1/entity-match-candidates",
+    response_model=EntityMatchView,
+    tags=["entity-resolution"],
+)
+def create_entity_match(
+    request: EntityMatchRequest,
+    session: DbSession,
+    settings: AppSettings,
+) -> EntityMatchView:
+    """Create a canonical review suggestion without automatically merging."""
+
+    try:
+        candidate = create_match_candidate(
+            session=session,
+            settings=settings,
+            entity_kind=request.entity_kind,
+            left_id=request.left_id,
+            right_id=request.right_id,
+            exact_stable_identifier=request.exact_stable_identifier,
+            name_similarity=request.name_similarity,
+        )
+    except EntityResolutionError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _entity_match_view(session, candidate)
+
+
+@router.post(
+    "/v1/entity-match-candidates/{candidate_id}/review",
+    response_model=EntityMatchView,
+    tags=["entity-resolution"],
+)
+def review_entity_match(
+    candidate_id: UUID,
+    request: EntityMatchReviewRequest,
+    session: DbSession,
+    settings: AppSettings,
+) -> EntityMatchView:
+    """Reject a suggestion or record an operator-approved logical merge."""
+
+    try:
+        candidate = review_match_candidate(
+            session=session,
+            settings=settings,
+            candidate_id=candidate_id,
+            action=request.action,
+            survivor_id=request.survivor_id,
+            reason=request.reason,
+        )
+    except EntityResolutionError as exc:
+        session.rollback()
+        status_code = 404 if "not found" in str(exc) else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    return _entity_match_view(session, candidate)
+
+
+@router.post(
+    "/v1/entity-merge-events/{event_id}/unmerge",
+    response_model=EntityMatchView,
+    tags=["entity-resolution"],
+)
+def unmerge_entity(
+    event_id: UUID,
+    request: EntityUnmergeRequest,
+    session: DbSession,
+    settings: AppSettings,
+) -> EntityMatchView:
+    """Reverse one logical merge with an append-only recovery event."""
+
+    try:
+        reversal = unmerge_entity_event(
+            session=session,
+            settings=settings,
+            merge_event_id=event_id,
+            reason=request.reason,
+        )
+    except EntityResolutionError as exc:
+        session.rollback()
+        status_code = 404 if "not found" in str(exc) else 409
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    if reversal.match_candidate_id is None:
+        raise HTTPException(status_code=409, detail="Unmerge event has no match candidate")
+    candidate = session.get(EntityMatchCandidate, reversal.match_candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=409, detail="Unmerge candidate disappeared")
+    return _entity_match_view(session, candidate)
+
+
 def _discovery_view(session: Session, run: DiscoveryRun) -> DiscoveryRunView:
     job = session.get(Job, run.job_id)
     if job is None:
@@ -588,6 +764,78 @@ def _discovery_view(session: Session, run: DiscoveryRun) -> DiscoveryRunView:
             )
             for item in candidates
         ],
+    )
+
+
+def _enrichment_view(session: Session, run: EnrichmentRun) -> EnrichmentRunView:
+    rows = session.execute(
+        select(EvidenceClaim, SourceDocument)
+        .join(SourceDocument, SourceDocument.id == EvidenceClaim.source_document_id)
+        .where(SourceDocument.enrichment_run_id == run.id)
+        .order_by(EvidenceClaim.claim_type, EvidenceClaim.created_at)
+    ).all()
+    return EnrichmentRunView(
+        id=run.id,
+        lead_id=run.lead_id,
+        plan_id=run.plan_id,
+        status=run.status,
+        current_step_order=run.current_step_order,
+        completed_fields=list(run.completed_fields_json),
+        stop_reason=run.stop_reason,
+        claims=[
+            EnrichmentClaimView(
+                id=claim.id,
+                claim_type=claim.claim_type,
+                value=claim.value_json,
+                normalized_value=claim.normalized_value,
+                classification=claim.classification,
+                confidence=claim.confidence,
+                verification_status=claim.verification_status,
+                review_status=claim.review_status,
+                valid_until=claim.valid_until,
+                source_url=document.canonical_url,
+            )
+            for claim, document in rows
+        ],
+    )
+
+
+def _entity_match_view(session: Session, candidate: EntityMatchCandidate) -> EntityMatchView:
+    left_id, right_id = candidate_subject_ids(candidate)
+    events = session.scalars(
+        select(EntityMergeEvent)
+        .where(EntityMergeEvent.match_candidate_id == candidate.id)
+        .order_by(EntityMergeEvent.occurred_at, EntityMergeEvent.id)
+    ).all()
+    return EntityMatchView(
+        id=candidate.id,
+        entity_kind=candidate.entity_kind,
+        left_id=left_id,
+        right_id=right_id,
+        match_basis=candidate.match_basis,
+        score=candidate.score,
+        status=candidate.status,
+        explanation=str(candidate.features_json["explanation"]),
+        reviewed_at=candidate.reviewed_at,
+        events=[_merge_event_view(event) for event in events],
+    )
+
+
+def _merge_event_view(event: EntityMergeEvent) -> EntityMergeEventView:
+    if event.entity_kind == "company":
+        survivor_id, merged_id = event.survivor_company_id, event.merged_company_id
+    else:
+        survivor_id, merged_id = event.survivor_person_id, event.merged_person_id
+    if survivor_id is None or merged_id is None:
+        raise EntityResolutionError("Merge event subjects are incomplete")
+    return EntityMergeEventView(
+        id=event.id,
+        action=event.action,
+        survivor_id=survivor_id,
+        merged_id=merged_id,
+        reverses_event_id=event.reverses_event_id,
+        reason=event.reason,
+        occurred_at=event.occurred_at.astimezone(UTC),
     )
 
 

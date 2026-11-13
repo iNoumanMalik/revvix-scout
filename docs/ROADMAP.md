@@ -115,15 +115,17 @@ This is the smallest functional milestone worth implementing. It validates the c
 
 ## M6 — Enrichment waterfall, evidence, and entity resolution
 
+**Implementation status:** Complete on 2026-11-13 for the approved provider-free, fictional-only scope. Versioned waterfalls, freshness and conflict handling, metadata-only enrichment, pre-call budget reservation, terminal usage settlement, durable evidence, exact/fuzzy review suggestions, operator review, and logical merge/unmerge recovery are implemented. Revisions `9e83bb75d0e3` and `c53cc7e9a80b` are applied to isolated local PostgreSQL; schema drift, RLS, grants, indexes, ledger integrity, concurrent reservation, and the full 85-test suite pass. A live adapter remains separately gated by provider-permission, privacy, sandbox, budget, and explicit enablement approval and is not required for the approved fictional milestone.
+
 **Outcome:** Promising leads are enriched selectively with durable provenance and recoverable matching.
 
 **Dependencies:** M4/M5 data; provider contract/license review.
 
-**Scope:** versioned waterfalls, field freshness, source documents/claims, conflict handling, exact/fuzzy matching review, merge/unmerge, one approved live adapter at a time.
+**Scope:** versioned waterfalls, field freshness, source documents/claims, conflict handling, exact/fuzzy matching review, merge/unmerge, and an adapter boundary that permits at most one separately approved live provider at a time.
 
 **Acceptance criteria:** No provider call without budget reservation; waterfall stops correctly; stale/conflicting claims remain visible; uncertain matches need review; merge history is recoverable; usage settles on all outcomes.
 
-**Tests:** stop/fallback branches, cache expiry, conflicting claims, concurrent reservation, duplicate suggestions, merge/unmerge integrity, live-adapter sandbox smoke test only with approval.
+**Tests:** stop/fallback branches, cache expiry, conflicting claims, concurrent reservation, duplicate suggestions, and merge/unmerge integrity. A live-adapter sandbox smoke test is required only after a provider is separately approved.
 
 ## M7 — AI qualification and opportunity detection
 

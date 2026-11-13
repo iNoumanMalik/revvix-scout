@@ -1,9 +1,9 @@
 # Database design
 
-**Status:** Long-term logical design. M2A, M3, and the approved fictional-only M4 and M5 schemas are implemented locally.
+**Status:** Long-term logical design. M2A, M3, the approved fictional-only M4 and M5 schemas, and the approved provider-free M6 enrichment/evidence/entity-resolution scope are implemented locally.
 **Target:** PostgreSQL 15+ / Supabase PostgreSQL
 
-The implemented model contains the M2A qualification records plus M3 provider configuration, jobs/attempts, discovery runs/candidates, budget policies/reservations, and provider usage events. M4 revision `410360f37f0b` adds people, canonical public-profile identities, and individual discovery candidates. Completion revision `20a7a62a7d6a` adds append-only review decisions, minimal suppressions, and exactly-one-subject business/person leads. M5 revision `415f89420420` adds fictional decision-maker candidates, person-company roles, and a discovery-kind discriminator. It lives in the non-exposed `scout` schema with RLS enabled and no browser/Data API grants. Authentication, membership policies, contacts, outreach, and other later entities remain planned.
+The implemented model contains the M2A qualification records plus M3 provider configuration, jobs/attempts, discovery runs/candidates, budget policies/reservations, and provider usage events. M4 revision `410360f37f0b` adds people, canonical public-profile identities, and individual discovery candidates. Completion revision `20a7a62a7d6a` adds append-only review decisions, minimal suppressions, and exactly-one-subject business/person leads. M5 revision `415f89420420` adds fictional decision-maker candidates, person-company roles, and a discovery-kind discriminator. M6 revision `9e83bb75d0e3` extends evidence freshness and supersession and adds versioned waterfalls plus review-first match/merge history; revision `c53cc7e9a80b` links shared reservation and usage ledgers to exactly one discovery or enrichment run. It lives in the non-exposed `scout` schema with RLS enabled and no browser/Data API grants. Authentication, membership policies, contacts, outreach, and other later entities remain planned.
 
 ## 1. Design principles
 

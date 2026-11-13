@@ -5,7 +5,15 @@ from datetime import UTC, datetime
 from sqlalchemy.orm import Session
 
 from revvix_scout.config import Settings
-from revvix_scout.db.models import BudgetPolicy, IcpConfig, IcpVersion, ProviderConfig, Workspace
+from revvix_scout.db.models import (
+    BudgetPolicy,
+    EnrichmentPlan,
+    EnrichmentStep,
+    IcpConfig,
+    IcpVersion,
+    ProviderConfig,
+    Workspace,
+)
 from revvix_scout.domain.individuals import development_individual_icp_definition
 from revvix_scout.domain.scoring import icp_definition
 
@@ -94,6 +102,13 @@ def bootstrap_defaults(session: Session, settings: Settings) -> None:
             1,
             True,
         ),
+        (
+            "fictional_firmographic_enrichment",
+            "fixture",
+            "firmographic_enrichment",
+            1,
+            True,
+        ),
     )
     for provider_key, adapter_kind, operation, hard_limit, fictional_only in providers:
         provider = (
@@ -149,4 +164,40 @@ def bootstrap_defaults(session: Session, settings: Settings) -> None:
                     enabled=True,
                 )
             )
+    plan = (
+        session.query(EnrichmentPlan)
+        .filter_by(
+            workspace_id=settings.default_workspace_id,
+            name="Fictional Business Firmographic Waterfall",
+            version=1,
+        )
+        .one_or_none()
+    )
+    if plan is None:
+        plan = EnrichmentPlan(
+            workspace_id=settings.default_workspace_id,
+            icp_version_id=settings.default_icp_version_id,
+            name="Fictional Business Firmographic Waterfall",
+            pipeline_kind="business",
+            version=1,
+            status="published",
+            required_fields_json=["industry", "employee_count"],
+            published_at=datetime.now(UTC),
+        )
+        session.add(plan)
+        session.flush()
+        session.add(
+            EnrichmentStep(
+                plan_id=plan.id,
+                step_order=1,
+                provider_key="fictional_firmographic_enrichment",
+                operation="firmographic_enrichment",
+                requested_fields_json=["industry", "employee_count"],
+                eligibility_json={"pipeline_kind": "business"},
+                freshness_days=30,
+                estimated_units=1,
+                stop_if_complete=True,
+                enabled=True,
+            )
+        )
     session.commit()

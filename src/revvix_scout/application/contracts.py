@@ -373,3 +373,80 @@ class DecisionMakerRoleView(BaseModel):
     relationship_type: str
     is_current: bool
     evidence_classification: str
+
+
+class EnrichmentRunRequest(BaseModel):
+    idempotency_key: Annotated[str, Field(min_length=8, max_length=160)]
+
+
+class EnrichmentClaimView(BaseModel):
+    id: UUID
+    claim_type: str
+    value: object
+    normalized_value: str
+    classification: str
+    confidence: float
+    verification_status: str
+    review_status: str
+    valid_until: datetime | None
+    source_url: str
+
+
+class EnrichmentRunView(BaseModel):
+    id: UUID
+    lead_id: UUID
+    plan_id: UUID
+    status: str
+    current_step_order: int | None
+    completed_fields: list[str]
+    stop_reason: str | None
+    claims: list[EnrichmentClaimView]
+
+
+class EntityMatchRequest(BaseModel):
+    entity_kind: Literal["company", "person"]
+    left_id: UUID
+    right_id: UUID
+    exact_stable_identifier: bool = False
+    name_similarity: Annotated[float, Field(ge=0, le=1)]
+
+
+class EntityMatchReviewRequest(BaseModel):
+    action: Literal["merge", "reject"]
+    survivor_id: UUID | None = None
+    reason: Annotated[str, Field(min_length=8, max_length=500)]
+
+    @model_validator(mode="after")
+    def merge_requires_survivor(self) -> "EntityMatchReviewRequest":
+        if self.action == "merge" and self.survivor_id is None:
+            raise ValueError("survivor_id is required for merge")
+        if self.action == "reject" and self.survivor_id is not None:
+            raise ValueError("survivor_id is not allowed for reject")
+        return self
+
+
+class EntityUnmergeRequest(BaseModel):
+    reason: Annotated[str, Field(min_length=8, max_length=500)]
+
+
+class EntityMergeEventView(BaseModel):
+    id: UUID
+    action: str
+    survivor_id: UUID
+    merged_id: UUID
+    reverses_event_id: UUID | None
+    reason: str
+    occurred_at: datetime
+
+
+class EntityMatchView(BaseModel):
+    id: UUID
+    entity_kind: str
+    left_id: UUID
+    right_id: UUID
+    match_basis: str
+    score: float
+    status: str
+    explanation: str
+    reviewed_at: datetime | None
+    events: list[EntityMergeEventView]

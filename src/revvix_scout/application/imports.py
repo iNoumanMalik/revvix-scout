@@ -332,9 +332,16 @@ def _process_valid_row(
         import_row_id=import_row.id,
         source_name="csv_import",
         source_type="import_row",
+        provider_key=None,
         source_record_id=row.source_record_id,
         canonical_url=str(row.source_url),
         content_hash=document_content_hash,
+        license_policy_json={
+            "source": "csv_import",
+            "raw_content_retained": False,
+        },
+        cache_expires_at=None,
+        redaction_status="metadata_only",
         observed_at=row.observed_at,
         retrieved_at=now,
     )

@@ -2,7 +2,7 @@
 
 Revvix Scout is a free-first lead intelligence platform for discovering, researching, enriching, and qualifying potential customers for Revvix AI. It is designed around two independent prospect pipelines—individual professionals and businesses—backed by shared evidence, entity resolution, qualification, budget control, and reporting capabilities.
 
-> Status: M3, the approved fictional-only M4 scope, and M5 fictional decision-maker research are complete and acceptance-tested against isolated local PostgreSQL. No live personal data, provider, LLM, outreach, paid-credit, hosted-Supabase, or cloud call is enabled.
+> Status: M3, the approved fictional-only M4 scope, M5 fictional decision-maker research, and the provider-free M6 scope are complete and acceptance-tested against isolated local PostgreSQL. Both M6 migrations are applied locally, including budgeted fictional enrichment and recoverable review-first entity resolution. No live personal data, provider, LLM, outreach, paid-credit, hosted-Supabase, or cloud call is enabled.
 
 ## Product principles
 
@@ -28,6 +28,7 @@ Revvix Scout is a free-first lead intelligence platform for discovering, researc
 - [Discovery CSV v1 contract](docs/DISCOVERY_CSV_V1.md)
 - [M4 fictional individual discovery contract](docs/INDIVIDUAL_DISCOVERY_M4.md)
 - [M5 fictional decision-maker research contract](docs/DECISION_MAKERS_M5.md)
+- [M6 enrichment and entity-resolution foundation](docs/ENRICHMENT_M6.md)
 - [Repository instructions](AGENTS.md)
 
 ## Implemented M2A workflow
